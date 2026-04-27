@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+venv/
+
+# VSCode
+.vscode/
+.vscode-server/
+
+# Cache
+.cache/
+*.log
+
+# Output
+output/
+
+# OS
+.DS_Store__pycache__/
+*.pyc
+.env
+output/
+*.log
+.DS_Store

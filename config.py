@@ -76,7 +76,6 @@ SLOTS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 ROOM_TYPES = ["normal", "computer"]
 # normal   — phòng học thường
-# lab      — phòng thí nghiệm
 # computer — phòng máy tính
 
 

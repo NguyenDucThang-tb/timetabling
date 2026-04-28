@@ -1,96 +1,117 @@
 # ============================================================
-# config.py — Cấu hình toàn bộ pipeline Timetabling
-# Greedy → GA → Local Search → Backtracking Repair
+# config.py — FULL VERSION (Optimized for real dataset)
+# Pipeline: Greedy → GA → Local Search → Backtracking Repair
 # ============================================================
 
 
 # ------------------------------------------------------------
-# 1. THAM SỐ GENETIC ALGORITHM
+# 0. DATA SETTINGS (QUAN TRỌNG NHẤT)
 # ------------------------------------------------------------
 
-POP_SIZE        = 50        # Số cá thể trong quần thể
-GENERATIONS     = 200       # Số thế hệ GA chạy
-CROSSOVER_PROB  = 0.9       # Xác suất crossover (90%)
-MUTATION_PROB   = 0.2       # Xác suất mutation (20%)
-TOURNAMENT_K    = 3         # Số cá thể tham gia tournament selection
-ELITISM_COUNT   = 2         # Số cá thể tốt nhất giữ nguyên sang thế hệ sau (elitism)
+USE_REAL_DATA_SLOTS = True   # Lấy timeslot trực tiếp từ slots.csv
+TOTAL_TIMESLOTS     = 72     # Dataset thực tế có 72 slots
 
 
 # ------------------------------------------------------------
-# 2. TRỌNG SỐ HÀM FITNESS
+# 1. GENETIC ALGORITHM (GLOBAL SEARCH)
 # ------------------------------------------------------------
 
-ALPHA = 10      # Trọng số hard penalty (phải >> BETA)
-BETA  = 1       # Trọng số soft penalty
+POP_SIZE        = 100       # Tăng để explore tốt hơn
+GENERATIONS     = 400       # Đủ để hội tụ
+CROSSOVER_PROB  = 0.9
+MUTATION_PROB   = 0.12      # Giảm để tránh phá nghiệm tốt
+TOURNAMENT_K    = 3
+ELITISM_COUNT   = 4         # Giữ nhiều nghiệm tốt hơn
 
-# Lý do ALPHA >> BETA:
-# GA phải ưu tiên xóa vi phạm cứng trước,
-# sau đó mới tối ưu ràng buộc mềm
-
-
-# ------------------------------------------------------------
-# 3. THAM SỐ LOCAL SEARCH (Tabu / Hill Climbing)
-# ------------------------------------------------------------
-
-LOCAL_SEARCH_ITERATIONS = 100   # Số bước lặp local search
-TABU_TENURE             = 10    # Số bước một move bị cấm trong tabu list
-NEIGHBOR_SAMPLE_SIZE    = 20    # Số neighbor sinh ra mỗi bước (không duyệt hết)
+# Seed từ Greedy (RẤT QUAN TRỌNG)
+USE_GREEDY_SEED = True
+GREEDY_RATIO    = 0.3       # 30% population từ Greedy
 
 
 # ------------------------------------------------------------
-# 4. THAM SỐ BACKTRACKING REPAIR
+# 2. FITNESS FUNCTION
 # ------------------------------------------------------------
 
-MAX_REPAIR_STEPS    = 500   # Giới hạn số bước backtracking (tránh vòng lặp vô tận)
-MAX_REPAIR_DEPTH    = 10    # Độ sâu tối đa của backtracking
+# Hard constraint phải dominate hoàn toàn
+ALPHA = 1000
+BETA  = 1
 
-
-# ------------------------------------------------------------
-# 5. RÀNG BUỘC MỀM — NGƯỠNG
-# ------------------------------------------------------------
-
-MAX_CONSECUTIVE_SLOTS = 3   # GV không dạy quá 3 tiết liên tiếp
-MAX_SLOTS_PER_DAY     = 5   # GV không dạy quá 5 tiết/ngày
-MAX_GAP_ALLOWED       = 1   # Số tiết trống tối đa được phép trong ngày của 1 lớp
+# Optional nâng cao (khuyên dùng nếu có thời gian)
+USE_DYNAMIC_ALPHA = True
 
 
 # ------------------------------------------------------------
-# 6. CẤU TRÚC THỜI GIAN
+# 3. LOCAL SEARCH (TABU SEARCH)
 # ------------------------------------------------------------
 
-DAYS_PER_WEEK   = 5         # Số ngày học trong tuần (Thứ 2 → Thứ 6)
-SLOTS_PER_DAY   = 6         # Số tiết mỗi ngày (tiết 1 → tiết 6)
-TOTAL_TIMESLOTS = DAYS_PER_WEEK * SLOTS_PER_DAY   # = 30 timeslot/tuần
+USE_TABU                = True
 
-# Mapping timeslot_id → (day, slot)
-# timeslot_id = day_index * SLOTS_PER_DAY + slot_index
-# Ví dụ: timeslot_id=0 → Thứ 2 tiết 1, timeslot_id=7 → Thứ 3 tiết 2
+LOCAL_SEARCH_ITERATIONS = 400
+NEIGHBOR_SAMPLE_SIZE    = 80
+TABU_TENURE             = 25
 
-DAYS  = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-SLOTS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+# Chiến lược cực quan trọng
+FOCUS_HARD_FIRST = True   # Ưu tiên sửa hard trước
 
 
 # ------------------------------------------------------------
-# 7. LOẠI PHÒNG HỌC
+# 4. BACKTRACKING REPAIR
+# ------------------------------------------------------------
+
+MAX_REPAIR_STEPS = 2000
+MAX_REPAIR_DEPTH = 20
+
+REPAIR_FOCUS_HARD_ONLY = True   # Chỉ sửa hard constraints
+
+
+# ------------------------------------------------------------
+# 5. SOFT CONSTRAINTS (ĐÃ ĐIỀU CHỈNH THEO DATA THẬT)
+# ------------------------------------------------------------
+
+MAX_CONSECUTIVE_SLOTS = 5   # Dataset có ngày dài hơn
+MAX_SLOTS_PER_DAY     = 7
+MAX_GAP_ALLOWED       = 2
+
+
+# ------------------------------------------------------------
+# 6. ROOM SETTINGS
 # ------------------------------------------------------------
 
 ROOM_TYPES = ["normal", "computer"]
-# normal   — phòng học thường
-# computer — phòng máy tính
 
 
 # ------------------------------------------------------------
-# 8. RANDOM SEED (tái lập kết quả)
+# 7. RANDOM SEED
 # ------------------------------------------------------------
 
 RANDOM_SEED = 42
 
 
 # ------------------------------------------------------------
-# 9. OUTPUT / LOGGING
+# 8. EARLY STOPPING (GIÚP CHẠY NHANH HƠN)
 # ------------------------------------------------------------
 
-VERBOSE         = True      # In log ra màn hình trong quá trình chạy
-PLOT_FITNESS    = True      # Vẽ biểu đồ fitness sau khi GA kết thúc
-SAVE_RESULT     = True      # Lưu FinalSchedule ra file
-OUTPUT_FILE     = "final_schedule.json"
+EARLY_STOPPING   = True
+NO_IMPROVE_LIMIT = 80
+
+
+# ------------------------------------------------------------
+# 9. TRACKING & DEBUG (ĂN ĐIỂM BÁO CÁO)
+# ------------------------------------------------------------
+
+VERBOSE              = True
+TRACK_HARD_PENALTY   = True
+TRACK_SOFT_PENALTY   = True
+
+SAVE_HISTORY         = True
+HISTORY_FILE         = "fitness_history.json"
+
+PLOT_FITNESS         = True
+
+
+# ------------------------------------------------------------
+# 10. OUTPUT
+# ------------------------------------------------------------
+
+SAVE_RESULT = True
+OUTPUT_FILE = "final_schedule.json"

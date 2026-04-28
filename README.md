@@ -1,4 +1,4 @@
-# Timetabling Optimization (AI Scheduling)
+# Timetabling Optimization 
 
 ## 📌 Description
 This project solves the school timetabling problem using:

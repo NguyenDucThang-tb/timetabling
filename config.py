@@ -33,10 +33,8 @@ GREEDY_RATIO    = 0.2       # 30% population từ Greedy
 # ------------------------------------------------------------
 
 # Hard constraint phải dominate hoàn toàn
-if generation < 100:
-    ALPHA = 100
-else:
-    ALPHA = 1000
+
+ALPHA = 1000
 BETA  = 1
 
 # Optional nâng cao (khuyên dùng nếu có thời gian)

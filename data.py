@@ -62,11 +62,13 @@ class Timeslot:
 @dataclass
 class Teacher:
     """Giao vien."""
-    id: str            # "T001"
-    name: str          # "Pho Duc Tai"
+    id: str                          # "T001"
+    name: str                        # "Pho Duc Tai"
+    preferred_shift: str = ""        # "sang" | "chieu" | "" (khong co uu tien)
 
     def __repr__(self) -> str:
-        return f"Teacher({self.id}, {self.name})"
+        shift = f", {self.preferred_shift}" if self.preferred_shift else ""
+        return f"Teacher({self.id}, {self.name}{shift})"
 
 
 @dataclass
@@ -85,6 +87,7 @@ class Demand:
     periods_per_week: int          # so tiet lien tiep can xep
     required_room_type: int        # 0 = thuong, 1 = lab
     candidate_teachers: list[str]  # ["T015", "T049", "T090"]
+    max_students: int = 0          # so sinh vien dang ky (de filter phong)
     priority: float = 0.0          # Diem uu tien (cao = xep truoc)
 
     def __repr__(self) -> str:
@@ -226,12 +229,16 @@ class TimetableDataset:
 
         # Conflict stats
         n_conflicts = sum(len(v) for v in self.conflict_matrix.values()) // 2
+        n_teachers_with_pref = sum(
+            1 for t in self.teachers.values() if t.preferred_shift
+        )
         lines += [
             "",
             "  Constraint Graph:",
             f"    Nodes (demands):     {len(self.demands)}",
             f"    Edges (conflicts):   {n_conflicts}",
             f"    Nhom lop:            {len(self.class_demand_map)}",
+            f"  GV co preferred_shift: {n_teachers_with_pref}/{len(self.teachers)}",
         ]
 
         # Top priority demands
@@ -289,7 +296,12 @@ def _load_teachers(path: str) -> dict[str, Teacher]:
             tid = row["teacher_id"].strip()
             if not tid:
                 continue
-            teachers[tid] = Teacher(id=tid, name=row["teacher_name"].strip())
+            preferred_shift = row.get("preferred_shift", "").strip().lower()
+            teachers[tid] = Teacher(
+                id=tid,
+                name=row["teacher_name"].strip(),
+                preferred_shift=preferred_shift,
+            )
     return teachers
 
 
@@ -312,6 +324,7 @@ def _load_demands(path: str) -> list[Demand]:
                 periods_per_week=int(float(row["periods_required_per_week"])),
                 required_room_type=int(row["required_room_type"]),
                 candidate_teachers=cand,
+                max_students=int(float(row.get("max_registered_students", 0) or 0)),
             ))
     return demands
 
@@ -391,6 +404,7 @@ def _build_conflict_matrix(
 
     Hai demand xung dot (KHONG duoc trung slot) khi:
       1. Chung class_group (cung nhom lop -> cung sinh vien)
+      2. Chi co duy nhat 1 candidate teacher chung (teacher duy nhat bi rang buoc cung gio)
 
     Day la rang buoc CUNG, doc lap voi viec gan teacher/room.
     Viec xung dot teacher/room se duoc kiem tra khi gan lich.
@@ -402,6 +416,24 @@ def _build_conflict_matrix(
         for i in range(len(dems)):
             for j in range(i + 1, len(dems)):
                 d1, d2 = dems[i], dems[j]
+                conflicts[d1.id].add(d2.id)
+                conflicts[d2.id].add(d1.id)
+
+    # Xung dot theo teacher duy nhat chung:
+    # Neu 2 demand cung chi co 1 candidate teacher duy nhat (gia tri do),
+    # chung BUOC PHAI dung cung teacher -> khong the xep cung slot.
+    for i in range(len(demands)):
+        for j in range(i + 1, len(demands)):
+            d1, d2 = demands[i], demands[j]
+            # Bo qua neu da conflict
+            if d2.id in conflicts[d1.id]:
+                continue
+            shared = set(d1.candidate_teachers) & set(d2.candidate_teachers)
+            # Chi conflict khi ca 2 demand deu chi co duy nhat 1 candidate
+            # va candidate do la chung nhau (khong con lua chon nao khac)
+            if (len(d1.candidate_teachers) == 1
+                    and len(d2.candidate_teachers) == 1
+                    and shared):
                 conflicts[d1.id].add(d2.id)
                 conflicts[d2.id].add(d1.id)
 
@@ -423,8 +455,11 @@ def _build_demand_compatibility(
     compat_slots: dict[str, list[list[Timeslot]]] = {}
 
     for d in demands:
-        # Phong phu hop (theo room_type)
-        compat_rooms[d.id] = rooms_by_type.get(d.required_room_type, [])
+        # Phong phu hop: dung room_type VA capacity >= max_students
+        candidate_rooms = rooms_by_type.get(d.required_room_type, [])
+        if d.max_students > 0:
+            candidate_rooms = [r for r in candidate_rooms if r.capacity >= d.max_students]
+        compat_rooms[d.id] = candidate_rooms
 
         # Nhom slot lien tiep phu hop
         groups = []
@@ -444,7 +479,7 @@ def _build_demand_compatibility(
 
 def _compute_priorities(
     demands: list[Demand],
-    rooms_by_type: dict[int, list[Room]],
+    compat_rooms: dict[str, list[Room]],
     conflict_matrix: dict[str, set[str]],
     demand_compatible_slots: dict[str, list[list[Timeslot]]],
 ) -> None:
@@ -454,8 +489,8 @@ def _compute_priorities(
 
     Cong thuc:
       priority = w1 * (1 / so_candidate_teachers)
-               + w2 * (1 / so_phong_phu_hop)
-               + w3 * so_xung_dot
+               + w2 * (1 / so_phong_tuong_thich_thuc_te)   # da loc capacity
+               + w3 * so_xung_dot                           # bao gom GV duy nhat
                + w4 * periods_per_week
                + w5 * (1 neu lab)
     """
@@ -463,9 +498,8 @@ def _compute_priorities(
 
     for d in demands:
         n_teachers = max(len(d.candidate_teachers), 1)
-        n_rooms = max(len(rooms_by_type.get(d.required_room_type, [])), 1)
+        n_rooms = max(len(compat_rooms.get(d.id, [])), 1)   # dung so phong thuc te (da loc capacity)
         n_conflicts = len(conflict_matrix.get(d.id, set()))
-        n_slots = len(demand_compatible_slots.get(d.id, []))
         is_lab = 1.0 if d.required_room_type == 1 else 0.0
 
         d.priority = (
@@ -493,11 +527,12 @@ def _validate(ds: TimetableDataset) -> list[str]:
                     f"[ERROR] Demand {d.id}: teacher {tid} khong ton tai"
                 )
 
-    # 2. Co phong phu hop
+    # 2. Co phong phu hop (room_type + capacity)
     for d in ds.demands:
         if not ds.get_compatible_rooms(d):
             warnings.append(
                 f"[ERROR] Demand {d.id}: khong co phong room_type={d.required_room_type}"
+                f" co suc chua >= {d.max_students}"
             )
 
     # 3. Co du slot lien tiep
@@ -585,7 +620,7 @@ def load_dataset(data_dir: Optional[str] = None) -> TimetableDataset:
 
     # Compute priorities
     print("[data] Computing priorities...")
-    _compute_priorities(demands, rooms_by_type, conflicts, compat_slots)
+    _compute_priorities(demands, compat_rooms, conflicts, compat_slots)
 
     # Assemble dataset
     ds = TimetableDataset(
@@ -649,4 +684,3 @@ if __name__ == "__main__":
               f"rooms={len(rooms)} "
               f"slot_groups={len(slots)} "
               f"conflicts={len(conflicts)}")
-

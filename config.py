@@ -5,113 +5,142 @@
 
 
 # ------------------------------------------------------------
-# 0. DATA SETTINGS (QUAN TRỌNG NHẤT)
+# 0. DATA PATHS
 # ------------------------------------------------------------
 
-USE_REAL_DATA_SLOTS = True   # Lấy timeslot trực tiếp từ slots.csv
-TOTAL_TIMESLOTS     = 72     # Dataset thực tế có 72 slots
+DATA_DIR = "data"   # Thu muc chua cac file CSV
+
+# Ten file CSV (tuong doi so voi DATA_DIR)
+FILE_ROOMS    = "rooms.csv"
+FILE_SLOTS    = "slots.csv"
+FILE_TEACHERS = "teacher_lookup.csv"
+FILE_DEMANDS  = "course_demands.csv"
 
 
 # ------------------------------------------------------------
-# 1. GENETIC ALGORITHM (GLOBAL SEARCH)
+# 1. DATA SETTINGS
 # ------------------------------------------------------------
 
-POP_SIZE        = 100       # Tăng để explore tốt hơn
-GENERATIONS     = 400       # Đủ để hội tụ
-CROSSOVER_PROB  = 0.9
-MUTATION_PROB   = 0.2      # Giảm để tránh phá nghiệm tốt
-TOURNAMENT_K    = 3
-ELITISM_COUNT   = 4         # Giữ nhiều nghiệm tốt hơn
+# Luon doc timeslot tu slots.csv — khong hardcode
+USE_REAL_DATA_SLOTS = True
 
-# Seed từ Greedy (RẤT QUAN TRỌNG)
+# Chi dung de validate sau khi load (khong dung de tao slot)
+# Se tu dong cap nhat tu len(ds.timeslots) sau khi load
+TOTAL_TIMESLOTS_EXPECTED = 72   # Gia tri mong doi; bao canh bao neu lech
+
+
+# ------------------------------------------------------------
+# 2. GENETIC ALGORITHM (GLOBAL SEARCH)
+# ------------------------------------------------------------
+
+POP_SIZE       = 100    # Kich thuoc quan the
+GENERATIONS    = 400    # So the he toi da
+CROSSOVER_PROB = 0.9    # Xac suat lai ghep
+MUTATION_PROB  = 0.2    # Xac suat dot bien — thap de giu nghiem tot
+TOURNAMENT_K   = 3      # So ca the tham gia tournament selection
+ELITISM_COUNT  = 4      # So ca the tot nhat giu nguyen qua moi the he
+
+# Khoi tao quan the tu Greedy (rat quan trong)
 USE_GREEDY_SEED = True
-GREEDY_RATIO    = 0.2       # 30% population từ Greedy
+GREEDY_RATIO    = 0.3   # 30% quan the duoc khoi tao tu Greedy
 
 
 # ------------------------------------------------------------
-# 2. FITNESS FUNCTION
+# 3. FITNESS FUNCTION
 # ------------------------------------------------------------
 
-# Hard constraint phải dominate hoàn toàn
-
+# Hard constraint phai dominate hoan toan soft constraint
+# fitness(S) = -(ALPHA * hard_penalty + BETA * soft_penalty)
 ALPHA = 1000
 BETA  = 1
 
-# Optional nâng cao (khuyên dùng nếu có thời gian)
+# Tang ALPHA theo so vi pham de tranh "chap nhan" hard violation
 USE_DYNAMIC_ALPHA = True
 
-
-# ------------------------------------------------------------
-# 3. LOCAL SEARCH (TABU SEARCH)
-# ------------------------------------------------------------
-
-USE_TABU                = True
-
-LOCAL_SEARCH_ITERATIONS = 200
-NEIGHBOR_SAMPLE_SIZE    = 50
-TABU_TENURE             = 12
-
-# Chiến lược cực quan trọng
-FOCUS_HARD_FIRST = True   # Ưu tiên sửa hard trước
+# --- Trong so cho tung soft constraint ---
+WEIGHT_PREFER_SHIFT     = 2.0   # Uu tien gio day phu hop (sang/chieu)
+WEIGHT_SPREAD_DAYS      = 1.5   # Phan bo deu lich trong tuan
+WEIGHT_CONSECUTIVE      = 1.0   # Phat day qua nhieu tiet lien tiep
+WEIGHT_GAP              = 0.5   # Phat tiet trong trong ngay
 
 
 # ------------------------------------------------------------
-# 4. BACKTRACKING REPAIR
+# 4. LOCAL SEARCH (TABU SEARCH)
 # ------------------------------------------------------------
 
-MAX_REPAIR_STEPS = 800
-MAX_REPAIR_DEPTH = 20
+USE_TABU = True
 
-REPAIR_FOCUS_HARD_ONLY = True   # Chỉ sửa hard constraints
+LOCAL_SEARCH_ITERATIONS = 200   # So buoc tim kiem cuc bo toi da
+NEIGHBOR_SAMPLE_SIZE    = 50    # So lang gieng sinh ra moi buoc
+TABU_TENURE             = 12    # So buoc mot move bi cam trong tabu list
 
-
-# ------------------------------------------------------------
-# 5. SOFT CONSTRAINTS (ĐÃ ĐIỀU CHỈNH THEO DATA THẬT)
-# ------------------------------------------------------------
-
-MAX_CONSECUTIVE_SLOTS = 6   # Dataset có ngày dài hơn
-MAX_SLOTS_PER_DAY     = 7
-MAX_GAP_ALLOWED       = 2
+# Uu tien sua hard constraint truoc khi toi uu soft
+FOCUS_HARD_FIRST = True
 
 
 # ------------------------------------------------------------
-# 6. ROOM SETTINGS
+# 5. BACKTRACKING REPAIR
 # ------------------------------------------------------------
 
-ROOM_TYPES = ["normal", "computer"]
+MAX_REPAIR_STEPS   = 800    # So buoc toi da truoc khi dung
+MAX_REPAIR_DEPTH   = 20     # Do sau backtracking toi da
+
+# Timeout de tranh truong hop xau nhat (exponential blowup)
+REPAIR_TIMEOUT_SECONDS = 10
+
+# Chi sua hard constraints; khong lam xau soft
+REPAIR_FOCUS_HARD_ONLY = True
 
 
 # ------------------------------------------------------------
-# 7. RANDOM SEED
+# 6. SOFT CONSTRAINT THRESHOLDS
+# ------------------------------------------------------------
+
+MAX_CONSECUTIVE_SLOTS = 6   # Toi da so tiet lien tiep trong 1 ngay
+MAX_SLOTS_PER_DAY     = 7   # Toi da tiet/ngay cho mot giao vien
+MAX_GAP_ALLOWED       = 2   # Toi da so tiet trong duoc chap nhan
+
+MORNING_PERIODS = [1, 2, 3, 4, 5, 6]
+AFTERNOON_PERIODS = [7, 8, 9, 10, 11, 12]
+# ------------------------------------------------------------
+# 7. ROOM SETTINGS
+# ------------------------------------------------------------
+
+ROOM_TYPE_NORMAL   = 0      # Phong thuong
+ROOM_TYPE_COMPUTER = 1      # Phong may / lab
+
+
+# ------------------------------------------------------------
+# 8. RANDOM SEED
 # ------------------------------------------------------------
 
 RANDOM_SEED = 42
 
 
 # ------------------------------------------------------------
-# 8. EARLY STOPPING (GIÚP CHẠY NHANH HƠN)
+# 9. EARLY STOPPING
 # ------------------------------------------------------------
 
 EARLY_STOPPING   = True
-NO_IMPROVE_LIMIT = 80
+NO_IMPROVE_LIMIT = 80   # Dung neu sau N the he fitness khong tang
 
 
 # ------------------------------------------------------------
-# 9. TRACKING & DEBUG (ĂN ĐIỂM BÁO CÁO)
+# 10. TRACKING & DEBUG
 # ------------------------------------------------------------
 
-VERBOSE              = True
-TRACK_HARD_PENALTY   = True
-TRACK_SOFT_PENALTY   = True
+VERBOSE            = True
+TRACK_HARD_PENALTY = True
+TRACK_SOFT_PENALTY = True
 
-SAVE_HISTORY         = True
-HISTORY_FILE         = "fitness_history.json"
+SAVE_HISTORY = True
+HISTORY_FILE = "fitness_history.json"
 
-PLOT_FITNESS         = True
+PLOT_FITNESS = True
 
 
 # ------------------------------------------------------------
-# 10. OUTPUT
+# 11. OUTPUT
 # ------------------------------------------------------------
 
 SAVE_RESULT = True

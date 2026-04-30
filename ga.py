@@ -116,18 +116,20 @@ def initialize_population(
         greedy_schedule and config.USE_GREEDY_SEED
     ) else 0
 
-    # Giữ nguyên greedy gốc làm cá thể đầu tiên
-    population.append(copy.deepcopy(greedy_schedule))  # ← thêm dòng này
+    # Keep one exact greedy chromosome so GA never starts worse only
+    # because all greedy seeds were mutated.
+    if n_greedy > 0:
+        population.append(copy.deepcopy(greedy_schedule))
 
-    # Các cá thể còn lại mutate bình thường
-    n_greedy = int(config.POP_SIZE * config.GREEDY_RATIO) - 1
-    for i in range(n_greedy):
-        rate = 0.05 + (0.25 * i / max(n_greedy - 1, 1))
+    n_mutated_greedy = max(0, n_greedy - 1)
+    for i in range(n_mutated_greedy):
+        # [FIX 7] Rate tăng dần: cá thể đầu gần greedy, cá thể sau đa dạng hơn
+        rate = 0.05 + (0.25 * i / max(n_mutated_greedy - 1, 1))   # 0.05 → 0.30
         chrom = copy.deepcopy(greedy_schedule)
         chrom = _light_mutate(chrom, ds, rate=rate)
         population.append(chrom)
 
-    for _ in range(config.POP_SIZE - n_greedy):
+    for _ in range(config.POP_SIZE - len(population)):
         chrom: Chromosome = {
             did: _random_assignment(did, ds)
             for did in demand_ids
@@ -420,7 +422,7 @@ def fitness_function(
 
 def tournament_selection(
     population: list[Chromosome],
-    fitness_scores: list[float],
+    eval_results: list[tuple[float, int, float]],
     k: int = config.TOURNAMENT_K,
 ) -> list[Chromosome]:
     """
@@ -428,7 +430,7 @@ def tournament_selection(
 
     Input:
         population    : list Chromosome
-        fitness_scores: list fitness tương ứng
+        eval_results: list tuple (fitness, hard, soft) tương ứng
         k             : số cá thể mỗi vòng đấu
     Output:
         selected: list Chromosome được chọn (len = POP_SIZE)
@@ -438,10 +440,76 @@ def tournament_selection(
 
     for _ in range(pop_size):
         idx = random.sample(range(pop_size), min(k, pop_size))
-        best_idx = max(idx, key=lambda i: fitness_scores[i])
+        best_idx = max(idx, key=lambda i: _dominance_key(eval_results[i]))
         selected.append(copy.deepcopy(population[best_idx]))
 
     return selected
+
+
+def _dominance_key(result: tuple[float, int, float]) -> tuple[float, float, float]:
+    """
+    Lexicographic objective:
+      1) minimize hard
+      2) minimize soft
+      3) maximize fitness
+    Converted to a max() key.
+    """
+    fit, hard, soft = result
+    return (-hard, -soft, fit)
+
+
+def _is_better_result(
+    cand: tuple[float, int, float],
+    base: tuple[float, int, float],
+) -> bool:
+    return _dominance_key(cand) > _dominance_key(base)
+
+
+def _collect_conflicted_demands(
+    chrom: Chromosome,
+    ds: TimetableDataset,
+    room_index: dict[str, object],
+    candidate_set: dict[str, set[str]],
+) -> set[str]:
+    bad: set[str] = set()
+
+    teacher_slot_usage: dict[tuple[str, str], list[str]] = {}
+    room_slot_usage: dict[tuple[str, str], list[str]] = {}
+    class_slot_usage: dict[tuple[str, str], list[str]] = {}
+
+    for did, asgn in chrom.items():
+        demand = ds.demand_by_id[did]
+
+        if not asgn.is_assigned():
+            bad.add(did)
+            continue
+
+        if asgn.teacher_id not in candidate_set.get(did, set()):
+            bad.add(did)
+
+        room = room_index.get(asgn.room_id)
+        if room is None or room.room_type != demand.required_room_type:
+            bad.add(did)
+        elif demand.max_students > 0 and room.capacity < demand.max_students:
+            bad.add(did)
+
+        for slot in asgn.slot_group:
+            teacher_slot_usage.setdefault((asgn.teacher_id, slot.id), []).append(did)
+            room_slot_usage.setdefault((asgn.room_id, slot.id), []).append(did)
+            for grp in demand.class_groups:
+                class_slot_usage.setdefault((grp, slot.id), []).append(did)
+
+    for dids in teacher_slot_usage.values():
+        if len(dids) > 1:
+            bad.update(dids)
+    for dids in room_slot_usage.values():
+        if len(dids) > 1:
+            bad.update(dids)
+    for dids in class_slot_usage.values():
+        if len(dids) > 1:
+            bad.update(dids)
+
+    return bad
 
 
 # ============================================================
@@ -533,6 +601,8 @@ def crossover(
 def mutate(
     chrom: Chromosome,
     ds: TimetableDataset,
+    room_index: dict[str, object],
+    candidate_set: dict[str, set[str]],
     adaptive_rate: Optional[float] = None,
 ) -> Chromosome:
     """
@@ -559,20 +629,43 @@ def mutate(
         return copy.deepcopy(chrom)
 
     chrom = copy.deepcopy(chrom)
-    mutation_types = ["swap_slot", "change_room", "change_teacher"]
+    base_mutation_types = ["swap_slot", "change_room", "change_teacher"]
 
     # [FIX 10] Dùng adaptive_rate nếu được truyền, fallback về config
     rate = adaptive_rate if adaptive_rate is not None else getattr(
         config, "MUTATION_DEMAND_RATE", 0.05
     )
 
+    conflicted = _collect_conflicted_demands(chrom, ds, room_index, candidate_set)
+    conflict_boost = float(getattr(config, "MUTATION_CONFLICT_BOOST", 3.0))
+
     for did in chrom:
-        if random.random() >= rate:
+        asgn = chrom[did]
+
+        local_rate = rate
+        if did in conflicted:
+            local_rate = min(0.90, rate * conflict_boost)
+        elif not asgn.is_assigned():
+            local_rate = max(rate, 0.50)
+        else:
+            local_rate = max(0.01, rate * 0.25)
+
+        if random.random() >= local_rate:
             continue
 
-        asgn = chrom[did]
+        if not asgn.is_assigned():
+            chrom[did] = _random_assignment(did, ds)
+            continue
+
         demand = ds.demand_by_id[did]
+        mutation_types = list(base_mutation_types)
+        if did in conflicted:
+            mutation_types.append("assign_full")
         mutation_type = random.choice(mutation_types)
+
+        if mutation_type == "assign_full":
+            chrom[did] = _random_assignment(did, ds)
+            continue
 
         if mutation_type == "swap_slot":
             compat_slots = ds.get_compatible_slot_groups(demand)
@@ -627,9 +720,10 @@ def run_ga(
     mean_history: list[float] = []
     best_schedule: Optional[Chromosome] = None
     best_fitness = float("-inf")
-    best_hard: int = 0
-    best_soft: float = 0.0
+    best_hard: int = 10**9
+    best_soft: float = float("inf")
     no_improve_count = 0
+    child_hard_worse_tol = int(getattr(config, "CHILD_HARD_WORSE_TOL", 2))
 
     for gen in range(config.GENERATIONS):
 
@@ -641,10 +735,13 @@ def run_ga(
         fitness_scores = [r[0] for r in results]
 
         # Cập nhật best
-        gen_best_idx = int(np.argmax(fitness_scores))
+        gen_best_idx = max(range(len(results)), key=lambda i: _dominance_key(results[i]))
         gen_best_fitness, gen_best_h, gen_best_s = results[gen_best_idx]
 
-        if gen_best_fitness > best_fitness:
+        if best_schedule is None or _is_better_result(
+            (gen_best_fitness, gen_best_h, gen_best_s),
+            (best_fitness, best_hard, best_soft),
+        ):
             best_fitness = gen_best_fitness
             best_schedule = copy.deepcopy(population[gen_best_idx])
             best_hard = gen_best_h
@@ -662,8 +759,8 @@ def run_ga(
                   f"| Hard: {best_hard:4d} | Soft: {best_soft:8.2f} "
                   f"| NoImprove: {no_improve_count}")
 
-        # Dừng sớm nếu đã hoàn hảo
-        if best_fitness >= 0:
+        # Dừng sớm nếu đã đạt hard=0
+        if best_hard == 0:
             if config.VERBOSE:
                 print(f"✅ Lịch hoàn hảo tại thế hệ {gen}!")
             break
@@ -677,14 +774,14 @@ def run_ga(
 
         # -- Elitism --
         sorted_pairs = sorted(
-            zip(fitness_scores, population),
-            key=lambda x: x[0],
+            zip(results, population),
+            key=lambda x: _dominance_key(x[0]),
             reverse=True,
         )
         elites = [copy.deepcopy(s) for _, s in sorted_pairs[:config.ELITISM_COUNT]]
 
         # -- Selection --
-        parents = tournament_selection(population, fitness_scores, k=config.TOURNAMENT_K)
+        parents = tournament_selection(population, results, k=config.TOURNAMENT_K)
         random.shuffle(parents)
 
         # [FIX 10] Tính adaptive_rate dựa trên no_improve_count
@@ -707,8 +804,29 @@ def run_ga(
             c1, c2 = crossover(p1, p2, ds, room_index)
 
             # [FIX 10] Truyền adaptive_rate vào mutate
-            c1 = mutate(c1, ds, adaptive_rate=adaptive_rate)
-            c2 = mutate(c2, ds, adaptive_rate=adaptive_rate)
+            c1 = mutate(
+                c1, ds, room_index=room_index, candidate_set=candidate_set, adaptive_rate=adaptive_rate
+            )
+            c2 = mutate(
+                c2, ds, room_index=room_index, candidate_set=candidate_set, adaptive_rate=adaptive_rate
+            )
+
+            # Child gate: reject children that are much worse in hard violations
+            # than the better parent.
+            p1_eval = fitness_function(p1, ds, room_index=room_index, candidate_set=candidate_set)
+            p2_eval = fitness_function(p2, ds, room_index=room_index, candidate_set=candidate_set)
+            if _is_better_result(p1_eval, p2_eval):
+                better_parent, better_parent_eval = p1, p1_eval
+            else:
+                better_parent, better_parent_eval = p2, p2_eval
+
+            c1_eval = fitness_function(c1, ds, room_index=room_index, candidate_set=candidate_set)
+            c2_eval = fitness_function(c2, ds, room_index=room_index, candidate_set=candidate_set)
+            if c1_eval[1] > better_parent_eval[1] + child_hard_worse_tol:
+                c1 = copy.deepcopy(better_parent)
+            if c2_eval[1] > better_parent_eval[1] + child_hard_worse_tol:
+                c2 = copy.deepcopy(better_parent)
+
             offspring.extend([c1, c2])
 
         population = elites + offspring[:num_offspring]

@@ -394,6 +394,69 @@ def print_summary(
 
 
 # ===========================================================================
+# CHUYEN DOI SANG CHROMOSOME CHO GA
+# ===========================================================================
+
+def convert_to_chromosome(
+    schedule: "Schedule",
+    ds: "TimetableDataset",
+) -> dict:
+    """
+    Chuyen schedule cua greedy (dict-based) sang Chromosome cua GA (dataclass-based).
+
+    Mapping:
+        greedy["teacher"]  -> Assignment.teacher_id  (str)
+        greedy["room"]     -> Assignment.room_id     (str)
+        greedy["slots"]    (list[str]) -> Assignment.slot_group (list[Timeslot])
+
+    Demand UNSCHEDULED (khong co trong schedule) -> Assignment(None, None, None)
+    -> GA se co gang xep chung qua mutation / crossover.
+
+    NOTE: import ga.Assignment duoc thuc hien lazy (tranh circular import
+    vi ga.py co the import greedy.py).
+
+    Input:
+        schedule : greedy Schedule dict
+        ds       : TimetableDataset
+    Output:
+        Chromosome: dict[demand_id -> ga.Assignment]
+    """
+    # Lazy import tranh circular dependency (ga import greedy)
+    from ga import Assignment as GaAssignment   # type: ignore
+
+    # Build index slot_id -> Timeslot object 1 lan, O(n)
+    slot_index: dict[str, Timeslot] = {s.id: s for s in ds.timeslots}
+
+    chromosome: dict = {}
+
+    for demand in ds.demands:
+        did = demand.id
+        asgn_dict = schedule.get(did)
+
+        if asgn_dict is None:
+            # UNSCHEDULED: Assignment rong, GA se tu tim cho qua mutation
+            chromosome[did] = GaAssignment(
+                teacher_id=None,
+                room_id=None,
+                slot_group=None,
+            )
+        else:
+            # Chuyen list[slot_id str] -> list[Timeslot object]
+            slot_group = [
+                slot_index[sid]
+                for sid in asgn_dict["slots"]
+                if sid in slot_index
+            ]
+            chromosome[did] = GaAssignment(
+                teacher_id=asgn_dict["teacher"],
+                room_id=asgn_dict["room"],
+                slot_group=slot_group if slot_group else None,
+            )
+
+    return chromosome
+
+
+# ===========================================================================
 # PUBLIC API
 # ===========================================================================
 

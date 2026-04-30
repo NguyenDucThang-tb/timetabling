@@ -116,9 +116,13 @@ def initialize_population(
         greedy_schedule and config.USE_GREEDY_SEED
     ) else 0
 
+    # Giữ nguyên greedy gốc làm cá thể đầu tiên
+    population.append(copy.deepcopy(greedy_schedule))  # ← thêm dòng này
+
+    # Các cá thể còn lại mutate bình thường
+    n_greedy = int(config.POP_SIZE * config.GREEDY_RATIO) - 1
     for i in range(n_greedy):
-        # [FIX 7] Rate tăng dần: cá thể đầu gần greedy, cá thể sau đa dạng hơn
-        rate = 0.05 + (0.25 * i / max(n_greedy - 1, 1))   # 0.05 → 0.30
+        rate = 0.05 + (0.25 * i / max(n_greedy - 1, 1))
         chrom = copy.deepcopy(greedy_schedule)
         chrom = _light_mutate(chrom, ds, rate=rate)
         population.append(chrom)

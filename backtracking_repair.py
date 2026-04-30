@@ -245,17 +245,27 @@ def repair_with_backtracking(
     )[:max_depth]
     mutable_set = set(target)
 
-    working = copy.deepcopy(schedule)
-    teacher_busy, room_busy, class_busy = _build_usage_from_fixed(working, ds, mutable_set)
+    # Usage from fixed part only (outside mutable set)
+    teacher_busy_seed, room_busy_seed, class_busy_seed = _build_usage_from_fixed(
+        schedule, ds, mutable_set
+    )
 
+    # Baseline when all mutable demands are temporarily unassigned.
+    # From this baseline, each feasible assignment of a mutable demand
+    # reduces hard by exactly demand.periods_per_week.
+    baseline = copy.deepcopy(schedule)
     for did in target:
-        working[did] = Assignment(None, None, None)
+        baseline[did] = Assignment(None, None, None)
+    baseline_hard = hard_penalty(
+        baseline, ds, room_index=room_index, candidate_set=candidate_set
+    )
 
-    candidate_map = {did: _candidate_assignments(did, ds) for did in target}
+    target_period_sum = sum(ds.demand_by_id[did].periods_per_week for did in target)
     max_nodes = int(getattr(config, "MAX_REPAIR_STEPS", 800))
     timeout_seconds = float(getattr(config, "REPAIR_TIMEOUT_SECONDS", 10))
     repair_early_stopping = bool(getattr(config, "REPAIR_EARLY_STOPPING", True))
     no_improve_limit = int(getattr(config, "REPAIR_NO_IMPROVE_LIMIT", 400))
+    max_attempts = int(getattr(config, "REPAIR_RESAMPLE_ATTEMPTS", 6))
 
     nodes_visited = 0
     backtracks = 0
@@ -267,32 +277,33 @@ def repair_with_backtracking(
     best_hard = hard_before
     best_soft = soft_before
     last_improve_node = 0
+    attempt = 0
+    while (
+        attempt < max_attempts
+        and nodes_visited < max_nodes
+        and (time.perf_counter() - start) <= timeout_seconds
+        and not stop_by_early
+        and best_hard > 0
+    ):
+        attempt += 1
 
-    def dfs(idx: int) -> bool:
-        nonlocal nodes_visited, backtracks, success
-        nonlocal stop_by_early, best_schedule, best_hard, best_soft, last_improve_node
+        working = copy.deepcopy(schedule)
+        for did in target:
+            working[did] = Assignment(None, None, None)
 
-        if time.perf_counter() - start > timeout_seconds:
-            return False
-        if nodes_visited >= max_nodes:
-            return False
-        if (
-            repair_early_stopping
-            and no_improve_limit > 0
-            and (nodes_visited - last_improve_node) >= no_improve_limit
-        ):
-            stop_by_early = True
-            return False
-        if best_hard == 0:
-            success = True
-            return True
-        if idx >= len(target):
-            success = True
-            return True
+        teacher_busy = set(teacher_busy_seed)
+        room_busy = set(room_busy_seed)
+        class_busy = set(class_busy_seed)
 
-        did = target[idx]
-        for cand in candidate_map.get(did, []):
-            nodes_visited += 1
+        candidate_map = {did: _candidate_assignments(did, ds) for did in target}
+        assigned_periods = 0
+
+        def dfs(idx: int) -> bool:
+            nonlocal nodes_visited, backtracks, success, assigned_periods
+            nonlocal stop_by_early, best_schedule, best_hard, best_soft, last_improve_node
+
+            if time.perf_counter() - start > timeout_seconds:
+                return False
             if nodes_visited >= max_nodes:
                 return False
             if (
@@ -303,17 +314,9 @@ def repair_with_backtracking(
                 stop_by_early = True
                 return False
 
-            if not _is_feasible_against_usage(
-                did, cand, ds, teacher_busy, room_busy, class_busy
-            ):
-                continue
-
-            _apply_usage(did, cand, ds, teacher_busy, room_busy, class_busy)
-            working[did] = cand
-
-            current_hard = hard_penalty(
-                working, ds, room_index=room_index, candidate_set=candidate_set
-            )
+            # Incremental hard score from baseline:
+            # each feasible assigned mutable demand reduces hard by its periods.
+            current_hard = max(0, baseline_hard - assigned_periods)
             if current_hard < best_hard:
                 best_hard = current_hard
                 best_soft = soft_penalty(working, ds)
@@ -323,17 +326,55 @@ def repair_with_backtracking(
                     success = True
                     return True
 
-            if dfs(idx + 1):
-                return True
-            _undo_usage(did, cand, ds, teacher_busy, room_busy, class_busy)
-            working[did] = Assignment(None, None, None)
-            if stop_by_early:
-                return False
+            if idx >= len(target):
+                # Complete assignment for current sampled candidate set.
+                return best_hard == 0
 
-        backtracks += 1
-        return False
+            did = target[idx]
+            did_periods = ds.demand_by_id[did].periods_per_week
+            for cand in candidate_map.get(did, []):
+                nodes_visited += 1
+                if nodes_visited >= max_nodes:
+                    return False
+                if (
+                    repair_early_stopping
+                    and no_improve_limit > 0
+                    and (nodes_visited - last_improve_node) >= no_improve_limit
+                ):
+                    stop_by_early = True
+                    return False
 
-    dfs(0)
+                if not _is_feasible_against_usage(
+                    did, cand, ds, teacher_busy, room_busy, class_busy
+                ):
+                    continue
+
+                _apply_usage(did, cand, ds, teacher_busy, room_busy, class_busy)
+                working[did] = cand
+                assigned_periods += did_periods
+
+                if dfs(idx + 1):
+                    return True
+
+                assigned_periods -= did_periods
+                _undo_usage(did, cand, ds, teacher_busy, room_busy, class_busy)
+                working[did] = Assignment(None, None, None)
+                if stop_by_early:
+                    return False
+
+            backtracks += 1
+            return False
+
+        if dfs(0):
+            break
+
+        # If no progress in this attempt, next attempt resamples candidates.
+        if config.VERBOSE:
+            rem = target_period_sum - max(0, baseline_hard - best_hard)
+            print(
+                f"[REPAIR] Resample attempt {attempt}/{max_attempts} "
+                f"| best_hard={best_hard} | unresolved_periods~{max(0, rem)}"
+            )
 
     hard_after = best_hard
     soft_after = best_soft

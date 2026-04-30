@@ -171,12 +171,58 @@ def _effective_alpha(hard: int) -> float:
     return float(config.ALPHA) * (1.0 + 0.05 * hard)
 
 
+def _to_chromosome_for_eval(schedule: Schedule, ds):
+    """Convert local-search Schedule to GA Chromosome for unified scoring."""
+    from ga import Assignment
+
+    chrom = {}
+    for d in ds.demands:
+        did = d.id
+        asgn = schedule.assignment.get(did)
+        if not asgn:
+            chrom[did] = Assignment(None, None, None)
+            continue
+
+        room = asgn["room"]
+        room_id = room.id if hasattr(room, "id") else str(room)
+        slots = list(asgn.get("slots", []))
+        teacher = asgn.get("teacher")
+        if teacher is None or not room_id or not slots:
+            chrom[did] = Assignment(None, None, None)
+            continue
+
+        chrom[did] = Assignment(
+            teacher_id=teacher,
+            room_id=room_id,
+            slot_group=slots,
+        )
+
+    return chrom
+
+
 def evaluate(schedule: Schedule, ds) -> tuple[float, int, float]:
-    hard = hard_penalty(schedule, ds)
-    soft = soft_penalty(schedule, ds)
-    alpha = _effective_alpha(hard)
-    score = -(alpha * hard + float(config.BETA) * soft)
-    return score, hard, soft
+    # Unified metric: use GA fitness/hard/soft so all pipeline stages
+    # are measured on the same scale.
+    from ga import _build_candidate_set, _build_room_index, fitness_function
+
+    chrom = _to_chromosome_for_eval(schedule, ds)
+
+    cache = getattr(evaluate, "_cache", None)
+    ds_key = id(ds)
+    if not cache or cache.get("ds_key") != ds_key:
+        cache = {
+            "ds_key": ds_key,
+            "room_index": _build_room_index(ds),
+            "candidate_set": _build_candidate_set(ds),
+        }
+        setattr(evaluate, "_cache", cache)
+
+    return fitness_function(
+        chrom,
+        ds,
+        room_index=cache["room_index"],
+        candidate_set=cache["candidate_set"],
+    )
 
 
 def _collect_conflicted_demands(schedule: Schedule, ds) -> list[str]:
@@ -216,6 +262,11 @@ def _collect_conflicted_demands(schedule: Schedule, ds) -> list[str]:
                 bad.add(d1_id)
                 bad.add(d2_id)
 
+    # Unassigned demands are hard violations under GA metric.
+    for d in ds.demands:
+        if d.id not in schedule.assignment:
+            bad.add(d.id)
+
     return list(bad)
 
 
@@ -224,10 +275,14 @@ def _sample_demands_for_move(schedule: Schedule, ds) -> list[str]:
         conflicted = _collect_conflicted_demands(schedule, ds)
         if conflicted:
             return conflicted
-    return list(schedule.assignment.keys())
+    # Include all demands (assigned + unassigned) so local search can
+    # try assigning currently missing demands.
+    return [d.id for d in ds.demands]
 
 
-def _mutate_assignment(schedule: Schedule, ds, d_id: str) -> Schedule | None:
+def _mutate_assignment(
+    schedule: Schedule, ds, d_id: str
+) -> tuple[Schedule, tuple[float, int, float]] | None:
     d = ds.demand_by_id[d_id]
     slot_groups = ds.get_compatible_slot_groups(d)
     rooms = ds.get_compatible_rooms(d)
@@ -241,23 +296,38 @@ def _mutate_assignment(schedule: Schedule, ds, d_id: str) -> Schedule | None:
     sample_rooms = random.sample(rooms, min(4, len(rooms)))
 
     best_neighbor = None
+    best_eval = None
     best_score = float("-inf")
+
+    old_assign = schedule.assignment.get(d_id)
 
     for slot_group in sample_slots:
         for teacher in sample_teachers:
             for room in sample_rooms:
-                new_s = schedule.copy()
-                new_s.assignment[d_id] = {
+                cand_assign = {
                     "teacher": teacher,
                     "room": room,
                     "slots": slot_group,
                 }
-                score, _, _ = evaluate(new_s, ds)
+
+                # Evaluate in-place, then rollback to avoid deep-copy per candidate.
+                schedule.assignment[d_id] = cand_assign
+                score, hard, soft = evaluate(schedule, ds)
                 if score > best_score:
                     best_score = score
-                    best_neighbor = new_s
+                    new_assignment = dict(schedule.assignment)
+                    new_assignment[d_id] = cand_assign
+                    best_neighbor = Schedule(assignment=new_assignment)
+                    best_eval = (score, hard, soft)
 
-    return best_neighbor
+    if old_assign is None:
+        schedule.assignment.pop(d_id, None)
+    else:
+        schedule.assignment[d_id] = old_assign
+
+    if best_neighbor is None:
+        return None
+    return best_neighbor, best_eval
 
 
 def _swap_two_demands(schedule: Schedule) -> Schedule | None:
@@ -265,32 +335,38 @@ def _swap_two_demands(schedule: Schedule) -> Schedule | None:
     if len(d_ids) < 2:
         return None
     d1, d2 = random.sample(d_ids, 2)
-    new_s = schedule.copy()
-    new_s.assignment[d1], new_s.assignment[d2] = new_s.assignment[d2], new_s.assignment[d1]
-    return new_s
+    new_assignment = dict(schedule.assignment)
+    new_assignment[d1], new_assignment[d2] = new_assignment[d2], new_assignment[d1]
+    return Schedule(assignment=new_assignment)
 
 
-def generate_neighbors(schedule: Schedule, ds, num_samples: int) -> list[tuple[Schedule, tuple[str, str, str, tuple[str, ...]] | None]]:
+def generate_neighbors(
+    schedule: Schedule,
+    ds,
+    num_samples: int,
+) -> list[tuple[Schedule, tuple[str, str, str, tuple[str, ...]] | None, tuple[float, int, float]]]:
     candidates = _sample_demands_for_move(schedule, ds)
     if not candidates:
         return []
 
-    neighbors: list[tuple[Schedule, tuple[str, str, str, tuple[str, ...]] | None]] = []
+    neighbors: list[tuple[Schedule, tuple[str, str, str, tuple[str, ...]] | None, tuple[float, int, float]]] = []
 
     for _ in range(num_samples):
         d_id = random.choice(candidates)
 
         # 80% reassign, 20% swap as diversification
         if random.random() < 0.8:
-            new_s = _mutate_assignment(schedule, ds, d_id)
-            if new_s is None:
+            result = _mutate_assignment(schedule, ds, d_id)
+            if result is None:
                 continue
+            new_s, eval_result = result
             move_sig = _move_signature(d_id, new_s.assignment[d_id])
-            neighbors.append((new_s, move_sig))
+            neighbors.append((new_s, move_sig, eval_result))
         else:
             new_s = _swap_two_demands(schedule)
             if new_s is not None:
-                neighbors.append((new_s, None))
+                eval_result = evaluate(new_s, ds)
+                neighbors.append((new_s, None, eval_result))
 
     return neighbors
 
@@ -317,8 +393,8 @@ def _tabu_search(initial_schedule: Schedule, ds) -> Schedule:
         chosen = None
         chosen_eval = None
 
-        for neigh, move_sig in neighbors:
-            score, hard, soft = evaluate(neigh, ds)
+        for neigh, move_sig, eval_result in neighbors:
+            score, hard, soft = eval_result
             is_tabu = move_sig is not None and tabu_until.get(move_sig, -1) >= it
             aspirational = score > best_score
 
@@ -379,11 +455,9 @@ def _hill_climbing(initial_schedule: Schedule, ds) -> Schedule:
         if not neighbors:
             break
 
-        scored = []
-        for neigh, _ in neighbors:
-            scored.append((evaluate(neigh, ds), neigh))
-
-        (cand_score, cand_hard, cand_soft), candidate = max(scored, key=lambda x: x[0][0])
+        (candidate, _move, (cand_score, cand_hard, cand_soft)) = max(
+            neighbors, key=lambda x: x[2][0]
+        )
 
         if cand_score > current_score:
             current = candidate
@@ -489,6 +563,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-                 

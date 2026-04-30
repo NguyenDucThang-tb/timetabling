@@ -81,15 +81,20 @@ FOCUS_HARD_FIRST = True
 # ------------------------------------------------------------
 # 5. BACKTRACKING REPAIR
 # ------------------------------------------------------------
-
-MAX_REPAIR_STEPS   = 800    # So buoc toi da truoc khi dung
-MAX_REPAIR_DEPTH   = 20     # Do sau backtracking toi da
+MAX_REPAIR_STEPS   = 100000    # So buoc toi da truoc khi dung
+MAX_REPAIR_DEPTH   = 25    # Do sau backtracking toi da
 
 # Timeout de tranh truong hop xau nhat (exponential blowup)
-REPAIR_TIMEOUT_SECONDS = 10
+REPAIR_TIMEOUT_SECONDS = 1200
 
 # Chi sua hard constraints; khong lam xau soft
 REPAIR_FOCUS_HARD_ONLY = True
+
+# Early stop cho backtracking repair:
+# - Dung ngay neu best_hard == 0
+# - Hoac dung neu qua N node lien tiep khong giam duoc best_hard
+REPAIR_EARLY_STOPPING = True
+REPAIR_NO_IMPROVE_LIMIT = 20000
 
 
 # ------------------------------------------------------------

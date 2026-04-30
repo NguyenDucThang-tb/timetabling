@@ -30,6 +30,7 @@ from __future__ import annotations
 import sys
 import time
 import argparse
+import random
 from collections import defaultdict
 from typing import Optional
 
@@ -184,7 +185,7 @@ def _sort_rooms(rooms: list[Room], demand: Demand) -> list[Room]:
 # GREEDY CORE
 # ===========================================================================
 
-def greedy_solve(ds: TimetableDataset, verbose: bool = True) -> tuple[Schedule, list[str]]:
+def greedy_solve(ds: TimetableDataset, verbose: bool = True, demand_order: Optional[list] = None) -> tuple[Schedule, list[str]]:
     """
     Thuat toan chinh.
 
@@ -196,7 +197,7 @@ def greedy_solve(ds: TimetableDataset, verbose: bool = True) -> tuple[Schedule, 
     unscheduled: list[str] = []
     state = GreedyState()
 
-    ordered = ds.get_demands_sorted_by_priority()
+    ordered = demand_order if demand_order is not None else ds.get_demands_sorted_by_priority()
     total   = len(ordered)
 
     if verbose:
@@ -394,6 +395,112 @@ def print_summary(
 
 
 # ===========================================================================
+# MULTI-RESTART GREEDY
+# ===========================================================================
+
+def greedy_best_of_n(
+    ds: TimetableDataset,
+    n: int = 5,
+    verbose: bool = False,
+    verbose_best: bool = True,
+) -> tuple[Schedule, list[str]]:
+    """
+    Chay greedy N lan voi thu tu demand khac nhau, giu lai lan tot nhat.
+
+    Muc dich: greedy thuan tuy phu thuoc vao thu tu xet demand.
+    - Lan 1: thu tu priority giam dan (chuan).
+    - Lan 2..N: pha tron mot phan de kham pha thu tu khac.
+
+    Chien luoc partial shuffle:
+      - Giu nguyen top 20%% demand priority cao nhat.
+      - Xao tron cac demand co priority gan bang nhau (cung "cum").
+      - noise_ratio tang dan theo so lan chay -> lan sau da dang hon lan truoc.
+    """
+    best_schedule:    Schedule  = {}
+    best_unscheduled: list[str] = []
+    best_count:       int       = -1
+
+    ordered = ds.get_demands_sorted_by_priority()
+
+    if verbose_best:
+        print(f"\n[greedy] Multi-restart: chay {n} lan...")
+
+    t0_total = time.time()
+
+    for i in range(n):
+        if i == 0:
+            trial_order = ordered[:]                          # lan 1: thu tu chuan
+        else:
+            trial_order = _partial_shuffle(ordered, noise_ratio=0.15 * i)
+
+        schedule, unscheduled = greedy_solve(
+            ds,
+            demand_order=trial_order,
+            verbose=verbose,
+        )
+        n_ok = len(schedule)
+
+        if verbose_best:
+            print(f"  Run {i+1:2d}/{n}: xep duoc {n_ok:3d}/{len(ds.demands)}"
+                  f"  unscheduled={len(unscheduled)}")
+
+        if n_ok > best_count:
+            best_count       = n_ok
+            best_schedule    = schedule
+            best_unscheduled = unscheduled
+
+    elapsed = time.time() - t0_total
+    if verbose_best:
+        pct = best_count / len(ds.demands) * 100
+        print(f"  => Tot nhat: {best_count}/{len(ds.demands)} ({pct:.1f}%)"
+              f"  [{elapsed:.2f}s]")
+
+    return best_schedule, best_unscheduled
+
+
+def _partial_shuffle(demands: list, noise_ratio: float = 0.15) -> list:
+    """
+    Xao tron mot phan danh sach demand da sap xep theo priority.
+
+    - Top 20%% (priority cao nhat): giu nguyen, khong cham.
+    - Phan con lai: cum theo priority window, xao tron trong cum.
+    - noise_ratio cao -> window lon -> xao tron nhieu hon.
+    """
+    if not demands:
+        return demands[:]
+
+    n        = len(demands)
+    lock_top = max(1, int(n * 0.20))
+    locked   = demands[:lock_top]
+    rest     = demands[lock_top:]
+
+    if not rest:
+        return locked[:]
+
+    max_priority = rest[0].priority if rest else 1.0
+    window       = max(0.5, max_priority * noise_ratio)
+
+    result:  list  = []
+    cluster: list  = []
+    base_pri       = rest[0].priority if rest else 0.0
+
+    for d in rest:
+        if base_pri - d.priority <= window:
+            cluster.append(d)
+        else:
+            random.shuffle(cluster)
+            result.extend(cluster)
+            cluster  = [d]
+            base_pri = d.priority
+
+    if cluster:
+        random.shuffle(cluster)
+        result.extend(cluster)
+
+    return locked + result
+
+
+# ===========================================================================
 # CHUYEN DOI SANG CHROMOSOME CHO GA
 # ===========================================================================
 
@@ -462,20 +569,33 @@ def convert_to_chromosome(
 
 def run(
     data_dir: Optional[str] = None,
-    verbose: bool = True,
-) -> tuple[Schedule, list[str]]:
+    verbose: bool = False,
+    n_restarts: int = 5,
+) -> tuple[Schedule, list[str], TimetableDataset]:
     """
-    Entry point de goi tu module khac:
+    Entry point chay greedy voi multi-restart.
 
         from greedy import run
-        schedule, unscheduled = run(data_dir="./data")
-        print(schedule["D001"])
-        # -> {"teacher": "T015", "room": "501-T3", "slots": ["S001", "S002"]}
+        schedule, unscheduled, ds = run(data_dir="./data", n_restarts=5)
+
+    Args:
+        data_dir   : thu muc CSV
+        verbose    : in chi tiet tung demand (tat mac dinh khi restart nhieu lan)
+        n_restarts : so lan restart (mac dinh 5)
+    Returns:
+        schedule     : Schedule tot nhat
+        unscheduled  : danh sach demand UNSCHEDULED
+        ds           : TimetableDataset (de dung lam dau vao cho GA)
     """
     ds = load_dataset(data_dir)
 
     t0 = time.time()
-    schedule, unscheduled = greedy_solve(ds, verbose=verbose)
+    if n_restarts > 1:
+        schedule, unscheduled = greedy_best_of_n(
+            ds, n=n_restarts, verbose=verbose, verbose_best=True
+        )
+    else:
+        schedule, unscheduled = greedy_solve(ds, verbose=verbose)
     elapsed = time.time() - t0
 
     errors = validate_schedule(schedule, ds)
@@ -484,11 +604,11 @@ def run(
         for e in errors:
             print(f"  {e}")
     else:
-        print("\n[greedy] Validation OK — khong co conflict nao trong schedule.")
+        print("[greedy] Validation OK — khong co conflict nao trong schedule.")
 
     print_summary(schedule, unscheduled, ds, elapsed)
 
-    return schedule, unscheduled
+    return schedule, unscheduled, ds
 
 
 # ===========================================================================
@@ -497,15 +617,20 @@ def run(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Greedy Timetable Solver")
-    parser.add_argument("--data",  default=None, help="Thu muc CSV (mac dinh: ./data)")
-    parser.add_argument("--quiet", action="store_true", help="Tat verbose (chi in summary)")
-    parser.add_argument("--top",   type=int, default=10,
-                        help="So dong schedule mau in ra cuoi (mac dinh: 10)")
+    parser.add_argument("--data",     default=None,  help="Thu muc CSV")
+    parser.add_argument("--quiet",    action="store_true", help="Tat verbose tung demand")
+    parser.add_argument("--restarts", type=int, default=5,
+                        help="So lan restart (mac dinh: 5, dat 1 de tat)")
+    parser.add_argument("--top",      type=int, default=10,
+                        help="So dong schedule mau in ra cuoi")
     args = parser.parse_args()
 
-    schedule, unscheduled = run(data_dir=args.data, verbose=not args.quiet)
+    schedule, unscheduled, ds = run(
+        data_dir=args.data,
+        verbose=not args.quiet,
+        n_restarts=args.restarts,
+    )
 
-    # In mau de kiem tra dau ra
     print(f"\n-- Mau schedule (top {args.top}) --")
     for did, asgn in list(schedule.items())[:args.top]:
         print(f"  {did}: teacher={asgn['teacher']!r:8s}  "

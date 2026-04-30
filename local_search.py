@@ -60,117 +60,6 @@ def initial_solution(ds) -> Schedule:
     return schedule
 
 
-def hard_penalty(schedule: Schedule, ds) -> int:
-    penalty = 0
-
-    teacher_time: dict[tuple[str, str], str] = {}
-    room_time: dict[tuple[str, str], str] = {}
-
-    # Teacher + room conflicts per slot
-    for d_id, assign in schedule.assignment.items():
-        teacher = assign["teacher"]
-        room = assign["room"]
-        for slot in assign["slots"]:
-            t_key = (teacher, slot.id)
-            r_key = (room.id, slot.id)
-            if t_key in teacher_time:
-                penalty += 1
-            teacher_time[t_key] = d_id
-            if r_key in room_time:
-                penalty += 1
-            room_time[r_key] = d_id
-
-    # Class conflicts from conflict graph; count each edge once
-    seen_pairs: set[tuple[str, str]] = set()
-    for d1_id, assign1 in schedule.assignment.items():
-        for d2_id in ds.get_conflicts(d1_id):
-            if d2_id not in schedule.assignment:
-                continue
-            pair = tuple(sorted((d1_id, d2_id)))
-            if pair in seen_pairs:
-                continue
-            seen_pairs.add(pair)
-
-            assign2 = schedule.assignment[d2_id]
-            if overlap(assign1["slots"], assign2["slots"]):
-                penalty += 1
-
-    return penalty
-
-
-def soft_penalty(schedule: Schedule, ds) -> float:
-    penalty = 0.0
-
-    teacher_day_periods: dict[str, dict[int, list[int]]] = {}
-    teacher_pref: dict[str, tuple[int, int]] = {}
-
-    for d_id, assign in schedule.assignment.items():
-        d = ds.demand_by_id[d_id]
-        teacher = assign["teacher"]
-        if teacher not in teacher_day_periods:
-            teacher_day_periods[teacher] = {}
-
-        # Shift preference per demand (simple heuristic)
-        if d.session_type.lower().startswith("thuc hanh"):
-            teacher_pref[teacher] = (0, 1)  # prefer afternoon
-        else:
-            teacher_pref[teacher] = (1, 0)  # prefer morning
-
-        for slot in assign["slots"]:
-            teacher_day_periods[teacher].setdefault(slot.day, []).append(slot.period)
-
-            # Shift preference penalty
-            prefer_morning, prefer_afternoon = teacher_pref[teacher]
-            if prefer_morning and slot.period in config.AFTERNOON_PERIODS:
-                penalty += config.WEIGHT_PREFER_SHIFT
-            if prefer_afternoon and slot.period in config.MORNING_PERIODS:
-                penalty += config.WEIGHT_PREFER_SHIFT
-
-    for _teacher, day_map in teacher_day_periods.items():
-        active_days = 0
-
-        for _day, periods in day_map.items():
-            if not periods:
-                continue
-            active_days += 1
-            p = sorted(set(periods))
-
-            # Max slots/day
-            overload = max(0, len(p) - config.MAX_SLOTS_PER_DAY)
-            penalty += overload * config.WEIGHT_SPREAD_DAYS
-
-            # Consecutive block length
-            longest = 1
-            cur = 1
-            for i in range(1, len(p)):
-                if p[i] == p[i - 1] + 1:
-                    cur += 1
-                    longest = max(longest, cur)
-                else:
-                    cur = 1
-            over_consecutive = max(0, longest - config.MAX_CONSECUTIVE_SLOTS)
-            penalty += over_consecutive * config.WEIGHT_CONSECUTIVE
-
-            # Gaps inside day (holes in occupied range)
-            if len(p) >= 2:
-                holes = (p[-1] - p[0] + 1) - len(p)
-                over_gap = max(0, holes - config.MAX_GAP_ALLOWED)
-                penalty += over_gap * config.WEIGHT_GAP
-
-        # Encourage spreading across week (avoid crowding)
-        if active_days > 0:
-            concentration = 1.0 / active_days
-            penalty += concentration * config.WEIGHT_SPREAD_DAYS
-
-    return penalty
-
-
-def _effective_alpha(hard: int) -> float:
-    if not config.USE_DYNAMIC_ALPHA:
-        return float(config.ALPHA)
-    return float(config.ALPHA) * (1.0 + 0.05 * hard)
-
-
 def _to_chromosome_for_eval(schedule: Schedule, ds):
     """Convert local-search Schedule to GA Chromosome for unified scoring."""
     from ga import Assignment
@@ -300,30 +189,30 @@ def _mutate_assignment(
     best_score = float("-inf")
 
     old_assign = schedule.assignment.get(d_id)
+    try:
+        for slot_group in sample_slots:
+            for teacher in sample_teachers:
+                for room in sample_rooms:
+                    cand_assign = {
+                        "teacher": teacher,
+                        "room": room,
+                        "slots": slot_group,
+                    }
 
-    for slot_group in sample_slots:
-        for teacher in sample_teachers:
-            for room in sample_rooms:
-                cand_assign = {
-                    "teacher": teacher,
-                    "room": room,
-                    "slots": slot_group,
-                }
-
-                # Evaluate in-place, then rollback to avoid deep-copy per candidate.
-                schedule.assignment[d_id] = cand_assign
-                score, hard, soft = evaluate(schedule, ds)
-                if score > best_score:
-                    best_score = score
-                    new_assignment = dict(schedule.assignment)
-                    new_assignment[d_id] = cand_assign
-                    best_neighbor = Schedule(assignment=new_assignment)
-                    best_eval = (score, hard, soft)
-
-    if old_assign is None:
-        schedule.assignment.pop(d_id, None)
-    else:
-        schedule.assignment[d_id] = old_assign
+                    # Evaluate in-place, then rollback in finally.
+                    schedule.assignment[d_id] = cand_assign
+                    score, hard, soft = evaluate(schedule, ds)
+                    if score > best_score:
+                        best_score = score
+                        new_assignment = dict(schedule.assignment)
+                        new_assignment[d_id] = cand_assign
+                        best_neighbor = Schedule(assignment=new_assignment)
+                        best_eval = (score, hard, soft)
+    finally:
+        if old_assign is None:
+            schedule.assignment.pop(d_id, None)
+        else:
+            schedule.assignment[d_id] = old_assign
 
     if best_neighbor is None:
         return None

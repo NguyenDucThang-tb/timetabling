@@ -22,7 +22,9 @@ from ga import (
     run_ga,
 )
 from greedy import convert_to_chromosome, greedy_solve
-from local_search import run_local_search
+from local_search import Schedule as LocalSearchSchedule
+from local_search import evaluate as evaluate_local_search
+from local_search import solve as solve_local_search
 
 
 def _evaluate(chrom: Chromosome, ds: TimetableDataset) -> tuple[float, int, float]:
@@ -54,7 +56,19 @@ def _serialize(chrom: Chromosome) -> dict[str, dict]:
 
 def _stage_log(name: str, score: float, hard: int, soft: float, chrom: Chromosome) -> None:
     assigned = sum(1 for a in chrom.values() if a.is_assigned())
-    print(f"[{name}] fitness={score:.2f} | hard={hard} | soft={soft:.2f} | assigned={assigned}/{len(chrom)}")
+    print(f"[{name}] fitness={score:.2f} | ga_hard={hard} | ga_soft={soft:.2f} | assigned={assigned}/{len(chrom)}")
+
+
+def _stage_log_local(
+    name: str,
+    score: float,
+    hard: int,
+    soft: float,
+    schedule: LocalSearchSchedule,
+    ds: TimetableDataset,
+) -> None:
+    assigned = len(schedule.assignment)
+    print(f"[{name}] fitness={score:.2f} | ga_hard={hard} | ga_soft={soft:.2f} | assigned={assigned}/{len(ds.demands)}")
 
 
 def run_pipeline(
@@ -69,6 +83,7 @@ def run_pipeline(
 
     ds = load_dataset(data_dir)
     print(ds.summary())
+    print("[metrics] All pipeline stage metrics below use GA fitness/hard/soft.")
 
     print("\n[1/4] Greedy initialization")
     greedy_schedule, unscheduled = greedy_solve(ds, verbose=config.VERBOSE)
@@ -89,8 +104,9 @@ def run_pipeline(
         plot_fitness(best_history, mean_history)
 
     print("\n[3/4] Local Search")
-    ls_best, ls_fit, ls_hard, ls_soft = run_local_search(ds, ga_best)
-    _stage_log("LOCAL_SEARCH", ls_fit, ls_hard, ls_soft, ls_best)
+    ls_best = solve_local_search(ds, ga_schedule=ga_best)
+    ls_fit, ls_hard, ls_soft = evaluate_local_search(ls_best, ds)
+    _stage_log_local("LOCAL_SEARCH", ls_fit, ls_hard, ls_soft, ls_best, ds)
 
     print("\n[4/4] Backtracking Repair")
     repair_result = repair_with_backtracking(ds, ls_best)
@@ -101,6 +117,10 @@ def run_pipeline(
         f"[REPAIR] success={repair_result.success} | nodes={repair_result.nodes_visited} "
         f"| backtracks={repair_result.backtracks} | repaired_demands={repair_result.repaired_demands} "
         f"| time={repair_result.elapsed_seconds:.2f}s"
+    )
+    print(
+        f"[GA-HARD TREND] greedy={g_hard} -> ga={ga_hard} -> "
+        f"local_search={ls_hard} -> repair={r_hard}"
     )
 
     result = {
@@ -155,4 +175,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

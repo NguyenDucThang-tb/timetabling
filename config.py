@@ -33,13 +33,13 @@ TOTAL_TIMESLOTS_EXPECTED = 72   # Gia tri mong doi; bao canh bao neu lech
 # 2. GENETIC ALGORITHM (GLOBAL SEARCH)
 # ------------------------------------------------------------
 
-POP_SIZE       = 100    # Kich thuoc quan the
-GENERATIONS    = 400    # So the he toi da
+POP_SIZE       = 150    # Kich thuoc quan the
+GENERATIONS    = 800     # So the he toi da
 CROSSOVER_PROB = 0.9    # Xac suat lai ghep
-MUTATION_PROB  = 0.2    # Xac suat dot bien — thap de giu nghiem tot
+MUTATION_PROB  = 0.9    # Xac suat dot bien — thap de giu nghiem tot
 TOURNAMENT_K   = 3      # So ca the tham gia tournament selection
-ELITISM_COUNT  = 4      # So ca the tot nhat giu nguyen qua moi the he
-
+ELITISM_COUNT  = 6      # So ca the tot nhat giu nguyen qua moi the he
+MUTATION_DEMAND_RATE = 0.05
 # Khoi tao quan the tu Greedy (rat quan trong)
 USE_GREEDY_SEED = True
 GREEDY_RATIO    = 0.3   # 30% quan the duoc khoi tao tu Greedy
@@ -101,7 +101,7 @@ MAX_SLOTS_PER_DAY     = 7   # Toi da tiet/ngay cho mot giao vien
 MAX_GAP_ALLOWED       = 2   # Toi da so tiet trong duoc chap nhan
 
 MORNING_PERIODS = [1, 2, 3, 4, 5, 6]
-AFTERNOON_PERIODS = [7, 8, 9, 10, 11, 12]
+AFTERNOON_PERIODS = [7, 8, 9, 10, 11, 12, 13]
 # ------------------------------------------------------------
 # 7. ROOM SETTINGS
 # ------------------------------------------------------------
@@ -122,7 +122,7 @@ RANDOM_SEED = 42
 # ------------------------------------------------------------
 
 EARLY_STOPPING   = True
-NO_IMPROVE_LIMIT = 80   # Dung neu sau N the he fitness khong tang
+NO_IMPROVE_LIMIT = 200   # Dung neu sau N the he fitness khong tang
 
 
 # ------------------------------------------------------------

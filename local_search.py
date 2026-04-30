@@ -1,349 +1,253 @@
 """
-local_search.py
+Local search module for timetabling.
 
-Tabu / Hill-climbing local search cho bai toan timetabling.
-Mac dinh doc tham so tu config.py.
+This module is synchronized with GA data model:
+    Chromosome = dict[demand_id -> ga.Assignment]
 """
 
 from __future__ import annotations
 
+import copy
 import random
-from copy import deepcopy
-from dataclasses import dataclass, field
-from typing import Any
+from typing import Optional
 
 import config
+from data import TimetableDataset
+from ga import (
+    Assignment,
+    Chromosome,
+    fitness_function,
+    hard_penalty,
+    soft_penalty,
+    _build_candidate_set,
+    _build_room_index,
+)
 
 
-@dataclass
-class Schedule:
-    """Lich dang xet: demand_id -> assignment."""
+def _random_assignment(demand_id: str, ds: TimetableDataset) -> Assignment:
+    demand = ds.demand_by_id[demand_id]
 
-    assignment: dict[str, dict[str, Any]] = field(default_factory=dict)
+    valid_teachers = [t for t in demand.candidate_teachers if t in ds.teachers]
+    teacher_id = random.choice(valid_teachers) if valid_teachers else None
 
-    def copy(self) -> "Schedule":
-        return deepcopy(self)
+    compat_rooms = ds.get_compatible_rooms(demand)
+    room_id = random.choice(compat_rooms).id if compat_rooms else None
 
+    compat_slots = ds.get_compatible_slot_groups(demand)
+    slot_group = random.choice(compat_slots) if compat_slots else None
 
-def overlap(slots1, slots2) -> bool:
-    return bool({s.id for s in slots1} & {s.id for s in slots2})
-
-
-def _slot_ids(assign: dict[str, Any]) -> tuple[str, ...]:
-    return tuple(sorted(slot.id for slot in assign["slots"]))
+    return Assignment(teacher_id=teacher_id, room_id=room_id, slot_group=slot_group)
 
 
-def _move_signature(demand_id: str, assign: dict[str, Any]) -> tuple[str, str, str, tuple[str, ...]]:
+def _evaluate(
+    chrom: Chromosome,
+    ds: TimetableDataset,
+    room_index: dict,
+    candidate_set: dict[str, set[str]],
+) -> tuple[float, int, float]:
+    return fitness_function(chrom, ds, room_index=room_index, candidate_set=candidate_set)
+
+
+def _move_signature(demand_id: str, asgn: Assignment) -> tuple[str, str, str, tuple[str, ...]]:
+    if not asgn.is_assigned():
+        return (demand_id, "None", "None", tuple())
     return (
         demand_id,
-        str(assign["teacher"]),
-        str(assign["room"].id),
-        _slot_ids(assign),
+        str(asgn.teacher_id),
+        str(asgn.room_id),
+        tuple(sorted(s.id for s in asgn.slot_group)),
     )
 
 
-def initial_solution(ds) -> Schedule:
-    schedule = Schedule()
-
-    for d in ds.get_demands_sorted_by_priority():
-        rooms = ds.get_compatible_rooms(d)
-        slots = ds.get_compatible_slot_groups(d)
-        if not d.candidate_teachers or not rooms or not slots:
-            continue
-
-        schedule.assignment[d.id] = {
-            "teacher": random.choice(d.candidate_teachers),
-            "room": random.choice(rooms),
-            "slots": random.choice(slots),
-        }
-
-    return schedule
-
-
-def hard_penalty(schedule: Schedule, ds) -> int:
-    penalty = 0
-
-    teacher_time: dict[tuple[str, str], str] = {}
-    room_time: dict[tuple[str, str], str] = {}
-
-    # Teacher + room conflicts per slot
-    for d_id, assign in schedule.assignment.items():
-        teacher = assign["teacher"]
-        room = assign["room"]
-        for slot in assign["slots"]:
-            t_key = (teacher, slot.id)
-            r_key = (room.id, slot.id)
-            if t_key in teacher_time:
-                penalty += 1
-            teacher_time[t_key] = d_id
-            if r_key in room_time:
-                penalty += 1
-            room_time[r_key] = d_id
-
-    # Class conflicts from conflict graph; count each edge once
-    seen_pairs: set[tuple[str, str]] = set()
-    for d1_id, assign1 in schedule.assignment.items():
-        for d2_id in ds.get_conflicts(d1_id):
-            if d2_id not in schedule.assignment:
-                continue
-            pair = tuple(sorted((d1_id, d2_id)))
-            if pair in seen_pairs:
-                continue
-            seen_pairs.add(pair)
-
-            assign2 = schedule.assignment[d2_id]
-            if overlap(assign1["slots"], assign2["slots"]):
-                penalty += 1
-
-    return penalty
-
-
-def soft_penalty(schedule: Schedule, ds) -> float:
-    penalty = 0.0
-
-    teacher_day_periods: dict[str, dict[int, list[int]]] = {}
-    teacher_pref: dict[str, tuple[int, int]] = {}
-
-    for d_id, assign in schedule.assignment.items():
-        d = ds.demand_by_id[d_id]
-        teacher = assign["teacher"]
-        if teacher not in teacher_day_periods:
-            teacher_day_periods[teacher] = {}
-
-        # Shift preference per demand (simple heuristic)
-        if d.session_type.lower().startswith("thuc hanh"):
-            teacher_pref[teacher] = (0, 1)  # prefer afternoon
-        else:
-            teacher_pref[teacher] = (1, 0)  # prefer morning
-
-        for slot in assign["slots"]:
-            teacher_day_periods[teacher].setdefault(slot.day, []).append(slot.period)
-
-            # Shift preference penalty
-            prefer_morning, prefer_afternoon = teacher_pref[teacher]
-            if prefer_morning and slot.period in config.AFTERNOON_PERIODS:
-                penalty += config.WEIGHT_PREFER_SHIFT
-            if prefer_afternoon and slot.period in config.MORNING_PERIODS:
-                penalty += config.WEIGHT_PREFER_SHIFT
-
-    for _teacher, day_map in teacher_day_periods.items():
-        active_days = 0
-
-        for _day, periods in day_map.items():
-            if not periods:
-                continue
-            active_days += 1
-            p = sorted(set(periods))
-
-            # Max slots/day
-            overload = max(0, len(p) - config.MAX_SLOTS_PER_DAY)
-            penalty += overload * config.WEIGHT_SPREAD_DAYS
-
-            # Consecutive block length
-            longest = 1
-            cur = 1
-            for i in range(1, len(p)):
-                if p[i] == p[i - 1] + 1:
-                    cur += 1
-                    longest = max(longest, cur)
-                else:
-                    cur = 1
-            over_consecutive = max(0, longest - config.MAX_CONSECUTIVE_SLOTS)
-            penalty += over_consecutive * config.WEIGHT_CONSECUTIVE
-
-            # Gaps inside day (holes in occupied range)
-            if len(p) >= 2:
-                holes = (p[-1] - p[0] + 1) - len(p)
-                over_gap = max(0, holes - config.MAX_GAP_ALLOWED)
-                penalty += over_gap * config.WEIGHT_GAP
-
-        # Encourage spreading across week (avoid crowding)
-        if active_days > 0:
-            concentration = 1.0 / active_days
-            penalty += concentration * config.WEIGHT_SPREAD_DAYS
-
-    return penalty
-
-
-def _effective_alpha(hard: int) -> float:
-    if not config.USE_DYNAMIC_ALPHA:
-        return float(config.ALPHA)
-    return float(config.ALPHA) * (1.0 + 0.05 * hard)
-
-
-def evaluate(schedule: Schedule, ds) -> tuple[float, int, float]:
-    hard = hard_penalty(schedule, ds)
-    soft = soft_penalty(schedule, ds)
-    alpha = _effective_alpha(hard)
-    score = -(alpha * hard + float(config.BETA) * soft)
-    return score, hard, soft
-
-
-def _collect_conflicted_demands(schedule: Schedule, ds) -> list[str]:
+def _collect_conflicted_demands(
+    chrom: Chromosome,
+    ds: TimetableDataset,
+    room_index: dict,
+    candidate_set: dict[str, set[str]],
+) -> list[str]:
     bad: set[str] = set()
 
-    teacher_time: dict[tuple[str, str], str] = {}
-    room_time: dict[tuple[str, str], str] = {}
+    teacher_slot_usage: dict[tuple[str, str], list[str]] = {}
+    room_slot_usage: dict[tuple[str, str], list[str]] = {}
+    class_slot_usage: dict[tuple[str, str], list[str]] = {}
 
-    for d_id, assign in schedule.assignment.items():
-        teacher = assign["teacher"]
-        room = assign["room"]
-        for slot in assign["slots"]:
-            t_key = (teacher, slot.id)
-            r_key = (room.id, slot.id)
-            if t_key in teacher_time:
-                bad.add(d_id)
-                bad.add(teacher_time[t_key])
-            else:
-                teacher_time[t_key] = d_id
+    for did, asgn in chrom.items():
+        demand = ds.demand_by_id[did]
 
-            if r_key in room_time:
-                bad.add(d_id)
-                bad.add(room_time[r_key])
-            else:
-                room_time[r_key] = d_id
+        if not asgn.is_assigned():
+            bad.add(did)
+            continue
 
-    seen_pairs: set[tuple[str, str]] = set()
-    for d1_id, assign1 in schedule.assignment.items():
-        for d2_id in ds.get_conflicts(d1_id):
-            if d2_id not in schedule.assignment:
-                continue
-            pair = tuple(sorted((d1_id, d2_id)))
-            if pair in seen_pairs:
-                continue
-            seen_pairs.add(pair)
-            if overlap(assign1["slots"], schedule.assignment[d2_id]["slots"]):
-                bad.add(d1_id)
-                bad.add(d2_id)
+        if asgn.teacher_id not in candidate_set.get(did, set()):
+            bad.add(did)
+
+        room = room_index.get(asgn.room_id)
+        if room is None or room.room_type != demand.required_room_type:
+            bad.add(did)
+        elif demand.max_students > 0 and room.capacity < demand.max_students:
+            bad.add(did)
+
+        for slot in asgn.slot_group:
+            teacher_slot_usage.setdefault((asgn.teacher_id, slot.id), []).append(did)
+            room_slot_usage.setdefault((asgn.room_id, slot.id), []).append(did)
+            for grp in demand.class_groups:
+                class_slot_usage.setdefault((grp, slot.id), []).append(did)
+
+    for dids in teacher_slot_usage.values():
+        if len(dids) > 1:
+            bad.update(dids)
+    for dids in room_slot_usage.values():
+        if len(dids) > 1:
+            bad.update(dids)
+    for dids in class_slot_usage.values():
+        if len(dids) > 1:
+            bad.update(dids)
 
     return list(bad)
 
 
-def _sample_demands_for_move(schedule: Schedule, ds) -> list[str]:
-    if config.FOCUS_HARD_FIRST:
-        conflicted = _collect_conflicted_demands(schedule, ds)
-        if conflicted:
-            return conflicted
-    return list(schedule.assignment.keys())
+def _sample(items: list, max_size: int) -> list:
+    if len(items) <= max_size:
+        return items
+    return random.sample(items, max_size)
 
 
-def _mutate_assignment(schedule: Schedule, ds, d_id: str) -> Schedule | None:
-    d = ds.demand_by_id[d_id]
-    slot_groups = ds.get_compatible_slot_groups(d)
-    rooms = ds.get_compatible_rooms(d)
-    teachers = d.candidate_teachers
+def _best_reassignment(
+    chrom: Chromosome,
+    ds: TimetableDataset,
+    demand_id: str,
+    room_index: dict,
+    candidate_set: dict[str, set[str]],
+) -> Optional[tuple[Chromosome, tuple[str, str, str, tuple[str, ...]]]]:
+    demand = ds.demand_by_id[demand_id]
+    teachers = _sample([t for t in demand.candidate_teachers if t in ds.teachers], 4)
+    rooms = _sample(ds.get_compatible_rooms(demand), 4)
+    slot_groups = _sample(ds.get_compatible_slot_groups(demand), 10)
 
-    if not slot_groups or not rooms or not teachers:
+    if not teachers or not rooms or not slot_groups:
         return None
 
-    sample_slots = random.sample(slot_groups, min(10, len(slot_groups)))
-    sample_teachers = random.sample(teachers, min(4, len(teachers)))
-    sample_rooms = random.sample(rooms, min(4, len(rooms)))
-
-    best_neighbor = None
+    best_neighbor: Optional[Chromosome] = None
     best_score = float("-inf")
+    best_assign: Optional[Assignment] = None
 
-    for slot_group in sample_slots:
-        for teacher in sample_teachers:
-            for room in sample_rooms:
-                new_s = schedule.copy()
-                new_s.assignment[d_id] = {
-                    "teacher": teacher,
-                    "room": room,
-                    "slots": slot_group,
-                }
-                score, _, _ = evaluate(new_s, ds)
+    for teacher_id in teachers:
+        for room in rooms:
+            for slot_group in slot_groups:
+                neighbor = copy.deepcopy(chrom)
+                neighbor[demand_id] = Assignment(
+                    teacher_id=teacher_id,
+                    room_id=room.id,
+                    slot_group=slot_group,
+                )
+                score, _, _ = _evaluate(neighbor, ds, room_index, candidate_set)
                 if score > best_score:
                     best_score = score
-                    best_neighbor = new_s
+                    best_neighbor = neighbor
+                    best_assign = neighbor[demand_id]
 
-    return best_neighbor
-
-
-def _swap_two_demands(schedule: Schedule) -> Schedule | None:
-    d_ids = list(schedule.assignment.keys())
-    if len(d_ids) < 2:
+    if best_neighbor is None or best_assign is None:
         return None
-    d1, d2 = random.sample(d_ids, 2)
-    new_s = schedule.copy()
-    new_s.assignment[d1], new_s.assignment[d2] = new_s.assignment[d2], new_s.assignment[d1]
-    return new_s
+    return best_neighbor, _move_signature(demand_id, best_assign)
 
 
-def generate_neighbors(schedule: Schedule, ds, num_samples: int) -> list[tuple[Schedule, tuple[str, str, str, tuple[str, ...]] | None]]:
-    candidates = _sample_demands_for_move(schedule, ds)
-    if not candidates:
-        return []
+def _swap_two_demands(chrom: Chromosome, ds: TimetableDataset) -> Optional[Chromosome]:
+    assigned_ids = [did for did, asgn in chrom.items() if asgn.is_assigned()]
+    if len(assigned_ids) < 2:
+        return None
 
-    neighbors: list[tuple[Schedule, tuple[str, str, str, tuple[str, ...]] | None]] = []
+    d1, d2 = random.sample(assigned_ids, 2)
+    a1, a2 = chrom[d1], chrom[d2]
+    demand1, demand2 = ds.demand_by_id[d1], ds.demand_by_id[d2]
 
+    # Swap only teachers when both teachers stay valid for the opposite demand.
+    if (
+        a1.teacher_id in demand2.candidate_teachers
+        and a2.teacher_id in demand1.candidate_teachers
+    ):
+        neighbor = copy.deepcopy(chrom)
+        neighbor[d1].teacher_id, neighbor[d2].teacher_id = a2.teacher_id, a1.teacher_id
+        return neighbor
+    return None
+
+
+def _generate_neighbors(
+    chrom: Chromosome,
+    ds: TimetableDataset,
+    room_index: dict,
+    candidate_set: dict[str, set[str]],
+) -> list[tuple[Chromosome, Optional[tuple[str, str, str, tuple[str, ...]]]]]:
+    num_samples = int(config.NEIGHBOR_SAMPLE_SIZE)
+    focus_ids = _collect_conflicted_demands(chrom, ds, room_index, candidate_set)
+    if not focus_ids:
+        focus_ids = list(chrom.keys())
+
+    neighbors: list[tuple[Chromosome, Optional[tuple[str, str, str, tuple[str, ...]]]]] = []
     for _ in range(num_samples):
-        d_id = random.choice(candidates)
-
-        # 80% reassign, 20% swap as diversification
+        demand_id = random.choice(focus_ids)
         if random.random() < 0.8:
-            new_s = _mutate_assignment(schedule, ds, d_id)
-            if new_s is None:
-                continue
-            move_sig = _move_signature(d_id, new_s.assignment[d_id])
-            neighbors.append((new_s, move_sig))
+            result = _best_reassignment(chrom, ds, demand_id, room_index, candidate_set)
+            if result is not None:
+                neighbors.append(result)
         else:
-            new_s = _swap_two_demands(schedule)
-            if new_s is not None:
-                neighbors.append((new_s, None))
-
+            swapped = _swap_two_demands(chrom, ds)
+            if swapped is not None:
+                neighbors.append((swapped, None))
     return neighbors
 
 
-def _tabu_search(initial_schedule: Schedule, ds) -> Schedule:
-    max_iter = int(config.LOCAL_SEARCH_ITERATIONS)
-    sample_size = int(config.NEIGHBOR_SAMPLE_SIZE)
-    tenure = int(config.TABU_TENURE)
+def _tabu_search(
+    initial_schedule: Chromosome,
+    ds: TimetableDataset,
+    room_index: dict,
+    candidate_set: dict[str, set[str]],
+) -> Chromosome:
+    current = copy.deepcopy(initial_schedule)
+    best = copy.deepcopy(initial_schedule)
 
-    current = initial_schedule
-    best = current.copy()
-
-    current_score, current_hard, current_soft = evaluate(current, ds)
+    current_score, current_hard, current_soft = _evaluate(
+        current, ds, room_index, candidate_set
+    )
     best_score, best_hard, best_soft = current_score, current_hard, current_soft
 
+    tenure = int(config.TABU_TENURE)
+    max_iter = int(config.LOCAL_SEARCH_ITERATIONS)
     tabu_until: dict[tuple[str, str, str, tuple[str, ...]], int] = {}
     no_improve = 0
 
     for it in range(1, max_iter + 1):
-        neighbors = generate_neighbors(current, ds, sample_size)
+        neighbors = _generate_neighbors(current, ds, room_index, candidate_set)
         if not neighbors:
             break
 
-        chosen = None
-        chosen_eval = None
+        chosen_neighbor: Optional[Chromosome] = None
+        chosen_move: Optional[tuple[str, str, str, tuple[str, ...]]] = None
+        chosen_eval: Optional[tuple[float, int, float]] = None
 
-        for neigh, move_sig in neighbors:
-            score, hard, soft = evaluate(neigh, ds)
+        for neighbor, move_sig in neighbors:
+            score, hard, soft = _evaluate(neighbor, ds, room_index, candidate_set)
             is_tabu = move_sig is not None and tabu_until.get(move_sig, -1) >= it
             aspirational = score > best_score
-
             if is_tabu and not aspirational:
                 continue
-
-            if chosen is None or score > chosen_eval[0]:
-                chosen = (neigh, move_sig)
+            if chosen_eval is None or score > chosen_eval[0]:
+                chosen_neighbor = neighbor
+                chosen_move = move_sig
                 chosen_eval = (score, hard, soft)
 
-        if chosen is None:
+        if chosen_neighbor is None or chosen_eval is None:
             no_improve += 1
             if config.EARLY_STOPPING and no_improve >= int(config.NO_IMPROVE_LIMIT):
                 break
             continue
 
-        current, move_sig = chosen
+        current = chosen_neighbor
         current_score, current_hard, current_soft = chosen_eval
+        if chosen_move is not None:
+            tabu_until[chosen_move] = it + tenure
 
-        if move_sig is not None:
-            tabu_until[move_sig] = it + tenure
-
-        improved = current_score > best_score
-        if improved:
-            best = current.copy()
+        if current_score > best_score:
+            best = copy.deepcopy(current)
             best_score, best_hard, best_soft = current_score, current_hard, current_soft
             no_improve = 0
         else:
@@ -363,34 +267,37 @@ def _tabu_search(initial_schedule: Schedule, ds) -> Schedule:
     return best
 
 
-def _hill_climbing(initial_schedule: Schedule, ds) -> Schedule:
-    max_iter = int(config.LOCAL_SEARCH_ITERATIONS)
-    sample_size = int(config.NEIGHBOR_SAMPLE_SIZE)
+def _hill_climbing(
+    initial_schedule: Chromosome,
+    ds: TimetableDataset,
+    room_index: dict,
+    candidate_set: dict[str, set[str]],
+) -> Chromosome:
+    current = copy.deepcopy(initial_schedule)
+    best = copy.deepcopy(initial_schedule)
 
-    current = initial_schedule
-    best = current.copy()
-
-    current_score, current_hard, current_soft = evaluate(current, ds)
+    current_score, current_hard, current_soft = _evaluate(
+        current, ds, room_index, candidate_set
+    )
     best_score = current_score
     no_improve = 0
 
-    for it in range(1, max_iter + 1):
-        neighbors = generate_neighbors(current, ds, sample_size)
+    for it in range(1, int(config.LOCAL_SEARCH_ITERATIONS) + 1):
+        neighbors = _generate_neighbors(current, ds, room_index, candidate_set)
         if not neighbors:
             break
 
-        scored = []
+        scored: list[tuple[tuple[float, int, float], Chromosome]] = []
         for neigh, _ in neighbors:
-            scored.append((evaluate(neigh, ds), neigh))
+            scored.append((_evaluate(neigh, ds, room_index, candidate_set), neigh))
 
         (cand_score, cand_hard, cand_soft), candidate = max(scored, key=lambda x: x[0][0])
 
         if cand_score > current_score:
             current = candidate
             current_score, current_hard, current_soft = cand_score, cand_hard, cand_soft
-
             if current_score > best_score:
-                best = current.copy()
+                best = copy.deepcopy(current)
                 best_score = current_score
                 no_improve = 0
             else:
@@ -412,83 +319,52 @@ def _hill_climbing(initial_schedule: Schedule, ds) -> Schedule:
     return best
 
 
-def local_search(initial_schedule: Schedule, ds) -> Schedule:
-    if config.USE_TABU:
-        return _tabu_search(initial_schedule, ds)
-    return _hill_climbing(initial_schedule, ds)
-
-
-def print_schedule(schedule: Schedule, ds) -> None:
-    print("\n" + "=" * 80)
-    print("FINAL TIMETABLE")
-    print("=" * 80)
-
-    timetable = {}
-    for d_id, assign in schedule.assignment.items():
-        d = ds.demand_by_id[d_id]
-        for grp in d.class_groups:
-            timetable.setdefault(grp, {})
-            for slot in assign["slots"]:
-                timetable[grp][slot.id] = {
-                    "subject": d.subject_code,
-                    "teacher": assign["teacher"],
-                    "room": assign["room"].id,
-                }
-
-    slot_map = {s.id: s for s in ds.timeslots}
-    for cls in sorted(timetable.keys()):
-        print(f"\n--- CLASS: {cls} ---")
-        sorted_slots = sorted(
-            timetable[cls].items(),
-            key=lambda x: (slot_map[x[0]].day, slot_map[x[0]].period),
-        )
-        for slot_id, info in sorted_slots:
-            s = slot_map[slot_id]
-            print(
-                f"{s.day_name:10s} T{s.period:02d} | "
-                f"{info['subject']:10s} | {info['teacher']:5s} | {info['room']:8s}"
-            )
-
-
-def solve(ds) -> Schedule:
+def run_local_search(
+    ds: TimetableDataset,
+    initial_schedule: Optional[Chromosome] = None,
+) -> tuple[Chromosome, float, int, float]:
     random.seed(getattr(config, "RANDOM_SEED", 42))
 
-    if config.VERBOSE:
-        print("[LS] Generating initial solution...")
-    s0 = initial_solution(ds)
+    room_index = _build_room_index(ds)
+    candidate_set = _build_candidate_set(ds)
 
+    if initial_schedule is None:
+        schedule = {d.id: _random_assignment(d.id, ds) for d in ds.demands}
+    else:
+        schedule = copy.deepcopy(initial_schedule)
+
+    f0, h0, s0 = _evaluate(schedule, ds, room_index, candidate_set)
     if config.VERBOSE:
-        f0, h0, s0_pen = evaluate(s0, ds)
-        print(f"[LS] Initial: hard={h0}, soft={s0_pen:.2f}, fitness={f0:.2f}")
+        print(f"[LS] Initial: hard={h0}, soft={s0:.2f}, fitness={f0:.2f}")
         print(f"[LS] Running {'Tabu Search' if config.USE_TABU else 'Hill Climbing'}...")
 
-    best = local_search(s0, ds)
+    if config.USE_TABU:
+        best = _tabu_search(schedule, ds, room_index, candidate_set)
+    else:
+        best = _hill_climbing(schedule, ds, room_index, candidate_set)
 
+    fb, hb, sb = _evaluate(best, ds, room_index, candidate_set)
     if config.VERBOSE:
-        fb, hb, sb = evaluate(best, ds)
         print(f"[LS] Done: hard={hb}, soft={sb:.2f}, fitness={fb:.2f}")
 
-    return best
+    return best, fb, hb, sb
 
 
 def main() -> None:
     from data import load_dataset
 
     ds = load_dataset()
-    best = solve(ds)
+    best, f, h, s = run_local_search(ds, initial_schedule=None)
 
-    f, h, s = evaluate(best, ds)
     print("\n[LS] Final result")
     print(f"  hard_penalty = {h}")
     print(f"  soft_penalty = {s:.2f}")
     print(f"  fitness      = {f:.2f}")
-
-    if getattr(config, "VERBOSE", False):
-        print_schedule(best, ds)
+    print(f"  assigned     = {sum(1 for a in best.values() if a.is_assigned())}/{len(best)}")
+    print(f"  hard(check)  = {hard_penalty(best, ds)}")
+    print(f"  soft(check)  = {soft_penalty(best, ds):.2f}")
 
 
 if __name__ == "__main__":
     main()
 
-
-                 

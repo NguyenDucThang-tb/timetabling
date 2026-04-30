@@ -22,15 +22,60 @@ from ga import (
     run_ga,
 )
 from greedy import convert_to_chromosome, greedy_solve
-from local_search import Schedule as LocalSearchSchedule
-from local_search import evaluate as evaluate_local_search
-from local_search import solve as solve_local_search
+import local_search as ls
 
 
 def _evaluate(chrom: Chromosome, ds: TimetableDataset) -> tuple[float, int, float]:
     room_index = _build_room_index(ds)
     candidate_set = _build_candidate_set(ds)
     return fitness_function(chrom, ds, room_index=room_index, candidate_set=candidate_set)
+
+
+def _chromosome_to_local_schedule(chrom: Chromosome, ds: TimetableDataset) -> ls.Schedule:
+    room_by_id = {r.id: r for r in ds.rooms}
+    schedule = ls.Schedule()
+    for did, asgn in chrom.items():
+        if not asgn.is_assigned():
+            continue
+        room_obj = room_by_id.get(asgn.room_id)
+        if room_obj is None:
+            continue
+        schedule.assignment[did] = {
+            "teacher": asgn.teacher_id,
+            "room": room_obj,
+            "slots": list(asgn.slot_group),
+        }
+    return schedule
+
+
+def _local_schedule_to_chromosome(schedule: ls.Schedule, ds: TimetableDataset) -> Chromosome:
+    from ga import Assignment
+
+    chrom: Chromosome = {}
+    for d in ds.demands:
+        did = d.id
+        asgn = schedule.assignment.get(did)
+        if asgn is None:
+            chrom[did] = Assignment(None, None, None)
+            continue
+
+        room = asgn["room"]
+        room_id = room.id if hasattr(room, "id") else str(room)
+        slot_group = list(asgn["slots"]) if asgn.get("slots") else None
+        chrom[did] = Assignment(
+            teacher_id=asgn.get("teacher"),
+            room_id=room_id,
+            slot_group=slot_group,
+        )
+    return chrom
+
+
+def _run_local_search_stage(ds: TimetableDataset, ga_best: Chromosome) -> tuple[Chromosome, float, int, float]:
+    local_initial = _chromosome_to_local_schedule(ga_best, ds)
+    local_best = ls.local_search(local_initial, ds)
+    chrom_best = _local_schedule_to_chromosome(local_best, ds)
+    score, hard, soft = _evaluate(chrom_best, ds)
+    return chrom_best, score, hard, soft
 
 
 def _serialize(chrom: Chromosome) -> dict[str, dict]:
@@ -56,19 +101,7 @@ def _serialize(chrom: Chromosome) -> dict[str, dict]:
 
 def _stage_log(name: str, score: float, hard: int, soft: float, chrom: Chromosome) -> None:
     assigned = sum(1 for a in chrom.values() if a.is_assigned())
-    print(f"[{name}] fitness={score:.2f} | ga_hard={hard} | ga_soft={soft:.2f} | assigned={assigned}/{len(chrom)}")
-
-
-def _stage_log_local(
-    name: str,
-    score: float,
-    hard: int,
-    soft: float,
-    schedule: LocalSearchSchedule,
-    ds: TimetableDataset,
-) -> None:
-    assigned = len(schedule.assignment)
-    print(f"[{name}] fitness={score:.2f} | ga_hard={hard} | ga_soft={soft:.2f} | assigned={assigned}/{len(ds.demands)}")
+    print(f"[{name}] fitness={score:.2f} | hard={hard} | soft={soft:.2f} | assigned={assigned}/{len(chrom)}")
 
 
 def run_pipeline(
@@ -83,7 +116,6 @@ def run_pipeline(
 
     ds = load_dataset(data_dir)
     print(ds.summary())
-    print("[metrics] All pipeline stage metrics below use GA fitness/hard/soft.")
 
     print("\n[1/4] Greedy initialization")
     greedy_schedule, unscheduled = greedy_solve(ds, verbose=config.VERBOSE)
@@ -104,9 +136,8 @@ def run_pipeline(
         plot_fitness(best_history, mean_history)
 
     print("\n[3/4] Local Search")
-    ls_best = solve_local_search(ds, ga_schedule=ga_best)
-    ls_fit, ls_hard, ls_soft = evaluate_local_search(ls_best, ds)
-    _stage_log_local("LOCAL_SEARCH", ls_fit, ls_hard, ls_soft, ls_best, ds)
+    ls_best, ls_fit, ls_hard, ls_soft = _run_local_search_stage(ds, ga_best)
+    _stage_log("LOCAL_SEARCH", ls_fit, ls_hard, ls_soft, ls_best)
 
     print("\n[4/4] Backtracking Repair")
     repair_result = repair_with_backtracking(ds, ls_best)
@@ -117,10 +148,6 @@ def run_pipeline(
         f"[REPAIR] success={repair_result.success} | nodes={repair_result.nodes_visited} "
         f"| backtracks={repair_result.backtracks} | repaired_demands={repair_result.repaired_demands} "
         f"| time={repair_result.elapsed_seconds:.2f}s"
-    )
-    print(
-        f"[GA-HARD TREND] greedy={g_hard} -> ga={ga_hard} -> "
-        f"local_search={ls_hard} -> repair={r_hard}"
     )
 
     result = {

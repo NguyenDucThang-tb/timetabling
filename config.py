@@ -39,10 +39,15 @@ CROSSOVER_PROB = 0.9    # Xac suat lai ghep
 MUTATION_PROB  = 0.9    # Xac suat dot bien — thap de giu nghiem tot
 TOURNAMENT_K   = 3      # So ca the tham gia tournament selection
 ELITISM_COUNT  = 6      # So ca the tot nhat giu nguyen qua moi the he
-MUTATION_DEMAND_RATE = 0.05
+MUTATION_DEMAND_RATE = 0.08
+# He so boost mutate cho demand dang conflict/unassigned trong GA
+MUTATION_CONFLICT_BOOST = 3.0
 # Khoi tao quan the tu Greedy (rat quan trong)
 USE_GREEDY_SEED = True
 GREEDY_RATIO    = 0.3   # 30% quan the duoc khoi tao tu Greedy
+
+# Child gate trong GA: cho phep con te hon parent tot nhat toi da N hard
+CHILD_HARD_WORSE_TOL = 2
 
 
 # ------------------------------------------------------------
@@ -81,11 +86,12 @@ FOCUS_HARD_FIRST = True
 # ------------------------------------------------------------
 # 5. BACKTRACKING REPAIR
 # ------------------------------------------------------------
-MAX_REPAIR_STEPS   = 100000    # So buoc toi da truoc khi dung
-MAX_REPAIR_DEPTH   = 25    # Do sau backtracking toi da
+
+MAX_REPAIR_STEPS   = 800    # So buoc toi da truoc khi dung
+MAX_REPAIR_DEPTH   = 20     # Do sau backtracking toi da
 
 # Timeout de tranh truong hop xau nhat (exponential blowup)
-REPAIR_TIMEOUT_SECONDS = 1200
+REPAIR_TIMEOUT_SECONDS = 1800
 
 # Chi sua hard constraints; khong lam xau soft
 REPAIR_FOCUS_HARD_ONLY = True
@@ -94,7 +100,7 @@ REPAIR_FOCUS_HARD_ONLY = True
 # - Dung ngay neu best_hard == 0
 # - Hoac dung neu qua N node lien tiep khong giam duoc best_hard
 REPAIR_EARLY_STOPPING = True
-REPAIR_NO_IMPROVE_LIMIT = 20000
+REPAIR_NO_IMPROVE_LIMIT = 400
 
 
 # ------------------------------------------------------------

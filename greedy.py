@@ -41,17 +41,12 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 from data import load_dataset, TimetableDataset, Demand, Room, Timeslot, Teacher
 
-# ---------------------------------------------------------------------------
 # Kieu du lieu dau ra
-# ---------------------------------------------------------------------------
 
 Assignment = dict   # {"teacher": str, "room": str, "slots": list[str]}
 Schedule   = dict   # demand_id (str) -> Assignment
 
-
-# ===========================================================================
 # GREEDY STATE  —  theo doi trang thai hien tai, kiem tra rang buoc O(1)
-# ===========================================================================
 
 class GreedyState:
 
@@ -109,10 +104,7 @@ class GreedyState:
             self.teacher_slots[teacher_id].add(sid)
 
 
-# ===========================================================================
 # HELPERS: sap xep ung vien theo heuristic nhe
-# ===========================================================================
-
 def _slot_shift(slot_group: list[Timeslot]) -> str:
     """Tiet 1-6: sang, 7+: chieu."""
     return "sang" if min(s.period for s in slot_group) <= 6 else "chieu"
@@ -181,10 +173,7 @@ def _sort_rooms(rooms: list[Room], demand: Demand) -> list[Room]:
     return sorted(rooms, key=lambda r: r.capacity)
 
 
-# ===========================================================================
 # GREEDY CORE
-# ===========================================================================
-
 def greedy_solve(ds: TimetableDataset, verbose: bool = True, demand_order: Optional[list] = None) -> tuple[Schedule, list[str]]:
     """
     Thuat toan chinh.
@@ -262,10 +251,7 @@ def greedy_solve(ds: TimetableDataset, verbose: bool = True, demand_order: Optio
     return schedule, unscheduled
 
 
-# ===========================================================================
 # VERBOSE PRINT HELPERS
-# ===========================================================================
-
 def _print_header() -> None:
     print(f"  {'ID':<7} {'Pri':>6}  {'Subject':<12} {'Type':<22} "
           f"{'Teacher':<8} {'Room':<14} {'Day':<10} {'Tiet':<8} Status")
@@ -290,9 +276,7 @@ def _print_row(
           f"{demand.session_type:<22} {t:<8} {r:<14} {day:<10} {tiet:<8} {status}")
 
 
-# ===========================================================================
 # POST-SOLVE VALIDATION
-# ===========================================================================
 
 def validate_schedule(schedule: Schedule, ds: TimetableDataset) -> list[str]:
     """
@@ -340,10 +324,7 @@ def validate_schedule(schedule: Schedule, ds: TimetableDataset) -> list[str]:
     return errors
 
 
-# ===========================================================================
 # SUMMARY REPORT
-# ===========================================================================
-
 def print_summary(
     schedule: Schedule,
     unscheduled: list[str],
@@ -394,10 +375,7 @@ def print_summary(
     print("=" * 65)
 
 
-# ===========================================================================
 # MULTI-RESTART GREEDY
-# ===========================================================================
-
 def greedy_best_of_n(
     ds: TimetableDataset,
     n: int = 5,

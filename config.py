@@ -14,8 +14,9 @@ DATA_DIR = "data"   # Thu muc chua cac file CSV
 FILE_ROOMS    = "rooms.csv"
 FILE_SLOTS    = "slots.csv"
 FILE_TEACHERS = "teacher_lookup.csv"
-FILE_DEMANDS  = "course_demands.csv"
+FILE_DEMANDS  = "course_demands_transformed_fullname.csv"
 
+WILDCARD_GROUPS: set[str] = {"ĐHKHTN", "DHKHTN","ĐHGD","DHGD","HỌC LẠI", "HOC LAI","ĐẠI CƯƠNG", "DAI CUONG", "KHTN", "CNKHTN"}
 
 # ------------------------------------------------------------
 # 1. DATA SETTINGS
@@ -33,21 +34,30 @@ TOTAL_TIMESLOTS_EXPECTED = 72   # Gia tri mong doi; bao canh bao neu lech
 # 2. GENETIC ALGORITHM (GLOBAL SEARCH)
 # ------------------------------------------------------------
 
-POP_SIZE       = 150    # Kich thuoc quan the
-GENERATIONS    = 800     # So the he toi da
+POP_SIZE       = 200    # Kich thuoc quan the
+GENERATIONS    = 800    # So the he toi da
 CROSSOVER_PROB = 0.9    # Xac suat lai ghep
-MUTATION_PROB  = 0.9    # Xac suat dot bien — thap de giu nghiem tot
-TOURNAMENT_K   = 3      # So ca the tham gia tournament selection
-ELITISM_COUNT  = 6      # So ca the tot nhat giu nguyen qua moi the he
-MUTATION_DEMAND_RATE = 0.08
-# He so boost mutate cho demand dang conflict/unassigned trong GA
-MUTATION_CONFLICT_BOOST = 3.0
-# Khoi tao quan the tu Greedy (rat quan trong)
-USE_GREEDY_SEED = True
-GREEDY_RATIO    = 0.3   # 30% quan the duoc khoi tao tu Greedy
+MUTATION_PROB  = 0.9    # Xac suat dot bien kich hoat
+TOURNAMENT_K   = 5      # So ca the tham gia tournament (tang len 3->5: selection pressure manh hon)
+ELITISM_COUNT  = 6      # So ca the tot nhat giu nguyen (giam 6->3: giam bao thu, tang da dang)
 
-# Child gate trong GA: cho phep con te hon parent tot nhat toi da N hard
-CHILD_HARD_WORSE_TOL = 2
+# Ty le demand bi dot bien moi lan mutate duoc kich hoat
+# 0.12: du manh de thoat local optimum ma khong pha vo qua nhieu
+MUTATION_DEMAND_RATE = 0.12
+
+# He so boost mutation cho demand dang vi pham hard constraint
+# Demand co conflict se bi mutate voi rate = min(0.90, base_rate * BOOST)
+MUTATION_CONFLICT_BOOST = 4.0
+
+# Child gate: tu choi con neu hard penalty kem hon parent qua nguong nay
+# TOL=5: can bang giua kham pha (khong qua chat) va chat luong (khong qua long)
+CHILD_HARD_WORSE_TOL = 8
+RESTART_THRESHOLD = 80
+# Khoi tao quan the tu Greedy seed
+USE_GREEDY_SEED = True
+GREEDY_RATIO    = 0.1   # 20% quan the tu Greedy (giam 0.3->0.2: tranh echo chamber)
+                        # Ca the dau tien luon la greedy nguyen ban (khong mutate)
+                        # Cac ca the con lai mutate voi rate tang dan 0.05->0.30
 
 
 # ------------------------------------------------------------
@@ -75,9 +85,9 @@ WEIGHT_GAP              = 0.5   # Phat tiet trong trong ngay
 
 USE_TABU = True
 
-LOCAL_SEARCH_ITERATIONS = 200   # So buoc tim kiem cuc bo toi da
-NEIGHBOR_SAMPLE_SIZE    = 50    # So lang gieng sinh ra moi buoc
-TABU_TENURE             = 12    # So buoc mot move bi cam trong tabu list
+LOCAL_SEARCH_ITERATIONS = 300   # So buoc tim kiem cuc bo toi da
+NEIGHBOR_SAMPLE_SIZE    = 80    # So lang gieng sinh ra moi buoc
+TABU_TENURE             = 16    # So buoc mot move bi cam trong tabu list
 
 # Uu tien sua hard constraint truoc khi toi uu soft
 FOCUS_HARD_FIRST = True
@@ -87,20 +97,41 @@ FOCUS_HARD_FIRST = True
 # 5. BACKTRACKING REPAIR
 # ------------------------------------------------------------
 
-MAX_REPAIR_STEPS   = 800    # So buoc toi da truoc khi dung
-MAX_REPAIR_DEPTH   = 20     # Do sau backtracking toi da
+# Node budget: <=0 means unlimited by node count, controlled by timeout
+MAX_REPAIR_STEPS = 0
 
-# Timeout de tranh truong hop xau nhat (exponential blowup)
-REPAIR_TIMEOUT_SECONDS = 1800
+# Max number of demands considered in one DFS target set
+MAX_REPAIR_DEPTH = 180
 
-# Chi sua hard constraints; khong lam xau soft
+# Global timeout for one repair call (seconds)
+REPAIR_TIMEOUT_SECONDS = 300
+
+# Keep compatibility flag (current code prioritizes hard then soft tie-break)
 REPAIR_FOCUS_HARD_ONLY = True
 
-# Early stop cho backtracking repair:
-# - Dung ngay neu best_hard == 0
-# - Hoac dung neu qua N node lien tiep khong giam duoc best_hard
-REPAIR_EARLY_STOPPING = True
+# Early stopping by no-improve nodes
+REPAIR_EARLY_STOPPING = False
 REPAIR_NO_IMPROVE_LIMIT = 400
+
+# Random seed for repair search/resampling
+REPAIR_RANDOM_SEED = 3
+
+# Candidate-space caps per demand
+REPAIR_MAX_TEACHER_CANDIDATES = 12
+REPAIR_MAX_ROOM_CANDIDATES = 16
+REPAIR_MAX_SLOTGROUP_CANDIDATES = 80
+
+# Hard-focused target expansion
+REPAIR_DYNAMIC_EXPAND_HOPS = 1
+REPAIR_DYNAMIC_EXPAND_BUDGET = 120
+REPAIR_HARD_FOCUS_CAP = 120
+
+# Multi-attempt / resampling control
+REPAIR_RESAMPLE_ATTEMPTS = 8
+REPAIR_STALE_EXPAND_EVERY = 2
+REPAIR_STALE_HOPS_STEP = 1
+REPAIR_STALE_CAP_STEP = 20
+REPAIR_STALE_BUDGET_STEP = 20
 
 
 # ------------------------------------------------------------

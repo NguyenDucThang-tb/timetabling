@@ -25,6 +25,24 @@ from greedy import convert_to_chromosome, greedy_solve
 import local_search as ls
 
 
+def _extract_ga_outputs(ga_out: tuple) -> tuple[Chromosome, list[float], list[float]]:
+    """
+    Normalize run_ga outputs across GA versions.
+
+    Expected minimum structure:
+        index 0: best chromosome
+        index 2: best fitness history
+        index 3: mean fitness history
+    """
+    if len(ga_out) < 4:
+        raise ValueError(f"run_ga returned {len(ga_out)} values, expected at least 4")
+
+    ga_best = ga_out[0]
+    best_history = ga_out[2]
+    mean_history = ga_out[3]
+    return ga_best, best_history, mean_history
+
+
 def _evaluate(chrom: Chromosome, ds: TimetableDataset) -> tuple[float, int, float]:
     room_index = _build_room_index(ds)
     candidate_set = _build_candidate_set(ds)
@@ -126,7 +144,8 @@ def run_pipeline(
         print(f"[GREEDY] unscheduled_demands={len(unscheduled)}")
 
     print("\n[2/4] Genetic Algorithm")
-    ga_best, ga_fit, best_history, mean_history = run_ga(ds, greedy_chrom)
+    ga_out = run_ga(ds, greedy_chrom)
+    ga_best, best_history, mean_history = _extract_ga_outputs(ga_out)
     if ga_best is None:
         ga_best = greedy_chrom
     ga_fit_chk, ga_hard, ga_soft = _evaluate(ga_best, ds)

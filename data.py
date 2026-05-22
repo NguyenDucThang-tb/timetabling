@@ -395,42 +395,50 @@ def _build_subject_demand_map(demands: list[Demand]) -> dict[str, list[Demand]]:
 # CONFLICT MATRIX BUILDER
 # =========================================================================
 
+# def is_generic_group(group: str) -> bool:
+#     """
+#     Xác định group có phải dạng chung (không nên tạo conflict) hay không.
+#     Ví dụ: ĐHKHTN, Học lại, Đại cương...
+#     """
+#     g = group.strip().upper()
+
+#     generic = {
+#         "ĐHKHTN", "DHKHTN",
+#         "HỌC LẠI", "HOC LAI",
+#         "ĐẠI CƯƠNG", "DAI CUONG",
+#         "KHTN", "CNKHTN"
+#     }
+
+#     # Không có số → thường là group chung
+#     has_digit = any(c.isdigit() for c in g)
+
+#     return g in generic or not has_digit
+
+
+
 def _build_conflict_matrix(
     demands: list[Demand],
     class_demand_map: dict[str, list[Demand]],
 ) -> dict[str, set[str]]:
-    """
-    Xay dung do thi xung dot giua cac demand.
-
-    Hai demand xung dot (KHONG duoc trung slot) khi:
-      1. Chung class_group (cung nhom lop -> cung sinh vien)
-      2. Chi co duy nhat 1 candidate teacher chung (teacher duy nhat bi rang buoc cung gio)
-
-    Day la rang buoc CUNG, doc lap voi viec gan teacher/room.
-    Viec xung dot teacher/room se duoc kiem tra khi gan lich.
-    """
     conflicts: dict[str, set[str]] = {d.id: set() for d in demands}
 
-    # Xung dot theo class_group
+    # Xung đột theo class_group — BỎ QUA wildcard group
     for grp, dems in class_demand_map.items():
+        if grp in config.WILDCARD_GROUPS:          # <-- thêm dòng này
+            continue                         # <-- thêm dòng này
         for i in range(len(dems)):
             for j in range(i + 1, len(dems)):
                 d1, d2 = dems[i], dems[j]
                 conflicts[d1.id].add(d2.id)
                 conflicts[d2.id].add(d1.id)
 
-    # Xung dot theo teacher duy nhat chung:
-    # Neu 2 demand cung chi co 1 candidate teacher duy nhat (gia tri do),
-    # chung BUOC PHAI dung cung teacher -> khong the xep cung slot.
+    # Xung đột theo teacher duy nhất chung (giữ nguyên)
     for i in range(len(demands)):
         for j in range(i + 1, len(demands)):
             d1, d2 = demands[i], demands[j]
-            # Bo qua neu da conflict
             if d2.id in conflicts[d1.id]:
                 continue
             shared = set(d1.candidate_teachers) & set(d2.candidate_teachers)
-            # Chi conflict khi ca 2 demand deu chi co duy nhat 1 candidate
-            # va candidate do la chung nhau (khong con lua chon nao khac)
             if (len(d1.candidate_teachers) == 1
                     and len(d2.candidate_teachers) == 1
                     and shared):
@@ -585,7 +593,7 @@ def load_dataset(data_dir: Optional[str] = None) -> TimetableDataset:
         "rooms": os.path.join(data_dir, "rooms.csv"),
         "slots": os.path.join(data_dir, "slots.csv"),
         "teachers": os.path.join(data_dir, "teacher_lookup.csv"),
-        "demands": os.path.join(data_dir, "course_demands.csv"),
+        "demands": os.path.join(data_dir, "course_demands_transformed_fullname.csv"),
     }
     for name, path in files.items():
         if not os.path.exists(path):

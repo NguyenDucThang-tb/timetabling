@@ -10,7 +10,6 @@ import config
 
 @dataclass
 class Schedule:
-    """Lich dang xet: demand_id -> assignment."""
 
     assignment: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -54,7 +53,6 @@ def initial_solution(ds) -> Schedule:
 
 
 def _to_chromosome_for_eval(schedule: Schedule, ds):
-    """Convert local-search Schedule to GA Chromosome for unified scoring."""
     from ga import Assignment
 
     chrom = {}

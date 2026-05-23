@@ -16,16 +16,8 @@ np.random.seed(config.RANDOM_SEED)
 random.seed(config.RANDOM_SEED)
 
 
-# ============================================================
-# 0. KIỂU DỮ LIỆU
-# ============================================================
-
 @dataclass
 class Assignment:
-    """
-    Kết quả gán cho một demand.
-    Nếu chưa xếp được thì các trường để None (unassigned).
-    """
     teacher_id: Optional[str]
     room_id: Optional[str]
     slot_group: Optional[list[Timeslot]]
@@ -41,49 +33,26 @@ class Assignment:
         return {s.id for s in self.slot_group}
 
     def copy(self) -> "Assignment":
-        """
-        [OPT-2] Shallow copy thay vì deepcopy.
-        slot_group là list Timeslot — các Timeslot không bị mutate in-place,
-        chỉ bị gán lại (asgn.slot_group = ...), nên giữ tham chiếu list là an toàn.
-        Khi cần thay slot_group, luôn gán object list mới thay vì sửa list cũ.
-        """
         return Assignment(
             teacher_id=self.teacher_id,
             room_id=self.room_id,
             slot_group=self.slot_group,
         )
 
-
-# Chromosome: demand_id -> Assignment
 Chromosome = dict[str, Assignment]
 
 
 class EvalResult(NamedTuple):
-    """
-    [DESIGN-2] Kết quả đánh giá một chromosome.
-    Dùng NamedTuple để truy cập theo tên thay vì index magic.
-    """
     fitness: float
     hard: int
     soft: float
 
     def dominance_key(self) -> tuple[int, float, float]:
-        """
-        [QUALITY-3] Key để so sánh hai cá thể theo thứ tự ưu tiên:
-          1) hard thấp nhất
-          2) soft thấp nhất
-          3) fitness cao nhất
-        Dùng cho max() — giá trị lớn hơn là tốt hơn.
-        """
         return (-self.hard, -self.soft, self.fitness)
 
     def is_better_than(self, other: "EvalResult") -> bool:
         return self.dominance_key() > other.dominance_key()
 
-
-# ============================================================
-# 1. PRE-COMPUTED INDEXES (tính 1 lần, dùng suốt)
-# ============================================================
 
 def build_room_index(ds: TimetableDataset) -> dict[str, object]:
     """room_id -> Room, O(1) lookup."""
@@ -105,14 +74,6 @@ def _build_candidate_set(ds: TimetableDataset) -> dict[str, set[str]]:
 
 
 def build_conflict_groups(ds: TimetableDataset) -> list[list[str]]:
-    """
-    [QUALITY-1] Xây dựng các nhóm demand xung đột với nhau.
-    Dùng Union-Find để gom các demand có conflict cạnh nhau thành một nhóm.
-    Crossover sẽ dùng thông tin này để swap nguyên nhóm — tránh phá vỡ
-    cấu trúc conflict đã được giải quyết.
-
-    Output: list các nhóm demand_id, mỗi nhóm là list[str]
-    """
     demand_ids = [d.id for d in ds.demands]
     parent = {did: did for did in demand_ids}
 
@@ -141,7 +102,6 @@ def build_conflict_groups(ds: TimetableDataset) -> list[list[str]]:
 
     result = list(groups.values())
 
-    # Defensive assert: đảm bảo không bỏ sót demand nào
     all_ids = {d.id for d in ds.demands}
     covered = {did for g in result for did in g}
     missing = all_ids - covered
@@ -154,12 +114,8 @@ def build_conflict_groups(ds: TimetableDataset) -> list[list[str]]:
     return result
 
 
-# ============================================================
-# 2. KHỞI TẠO QUẦN THỂ
-# ============================================================
 
 def _random_assignment(demand_id: str, ds: TimetableDataset) -> Assignment:
-    """Gán ngẫu nhiên hợp lệ về room_type và slot count."""
     demand = ds.demand_by_id[demand_id]
 
     valid_teachers = [t for t in demand.candidate_teachers if t in ds.teachers]
@@ -169,17 +125,12 @@ def _random_assignment(demand_id: str, ds: TimetableDataset) -> Assignment:
     room_id = random.choice(compat_rooms).id if compat_rooms else None
 
     compat_slots = ds.get_compatible_slot_groups(demand)
-    # [OPT-2] Không copy list slot — giữ tham chiếu, chỉ gán lại khi mutate
     slot_group = random.choice(compat_slots) if compat_slots else None
 
     return Assignment(teacher_id=teacher_id, room_id=room_id, slot_group=slot_group)
 
 
 def _light_mutate(chrom: Chromosome, ds: TimetableDataset, rate: float) -> Chromosome:
-    """
-    Mutate nhẹ để tạo đa dạng từ greedy seed.
-    [OPT-2] Dùng shallow copy chromosome thay vì deepcopy toàn bộ.
-    """
     new_chrom: Chromosome = {}
     for did in chrom:
         if random.random() < rate:
@@ -193,12 +144,6 @@ def initialize_population(
     ds: TimetableDataset,
     greedy_schedule: Optional[Chromosome] = None,
 ) -> list[Chromosome]:
-    """
-    Khởi tạo quần thể:
-    - Giữ 1 bản greedy gốc (nếu có)
-    - Mutate greedy với rate tăng dần 0.05 → 0.30 (tăng đa dạng)
-    - Phần còn lại: random hoàn toàn
-    """
     population: list[Chromosome] = []
     demand_ids = [d.id for d in ds.demands]
 
@@ -224,7 +169,6 @@ def initialize_population(
 
 
 def _make_random_population(ds: TimetableDataset, n: int) -> list[Chromosome]:
-    """Tạo n chromosome hoàn toàn ngẫu nhiên — dùng cho restart."""
     demand_ids = [d.id for d in ds.demands]
     return [
         {did: _random_assignment(did, ds) for did in demand_ids}
@@ -232,26 +176,18 @@ def _make_random_population(ds: TimetableDataset, n: int) -> list[Chromosome]:
     ]
 
 
-# ============================================================
-# 3. BUILD USAGE INDEX — tính 1 lần, tái dùng cho hard + collect
-# ============================================================
-
 def _build_usage_index(
     chrom: Chromosome,
     ds: TimetableDataset,
     room_index: dict,
     candidate_set: dict[str, set[str]],
 ) -> tuple[
-    dict[tuple, list[str]],   # teacher_slot
-    dict[tuple, list[str]],   # room_slot
-    dict[tuple, list[str]],   # class_slot
-    set[str],                 # individual_bad
-    int,                      # base_penalty
+    dict[tuple, list[str]],   
+    dict[tuple, list[str]], 
+    dict[tuple, list[str]],  
+    set[str],                 
+    int,                     
 ]:
-    """
-    [OPT-3] Xây dựng usage index một lần duy nhất.
-    Cả hard_penalty lẫn collect_conflicted_demands đều dùng chung index này.
-    """
     teacher_slot: dict[tuple, list[str]] = {}
     room_slot:    dict[tuple, list[str]] = {}
     class_slot:   dict[tuple, list[str]] = {}
@@ -289,9 +225,6 @@ def _build_usage_index(
     return teacher_slot, room_slot, class_slot, individual_bad, base_penalty
 
 
-# ============================================================
-# 4. HARD PENALTY
-# ============================================================
 
 def hard_penalty(
     chrom: Chromosome,
@@ -299,10 +232,6 @@ def hard_penalty(
     room_index: dict,
     candidate_set: dict[str, set[str]],
 ) -> int:
-    """
-    Đếm số vi phạm ràng buộc cứng.
-    [OPT-3] Dùng _build_usage_index — không build dict riêng nữa.
-    """
     teacher_slot, room_slot, class_slot, _, base_penalty = _build_usage_index(
         chrom, ds, room_index, candidate_set
     )
@@ -323,10 +252,6 @@ def hard_penalty(
     return penalty
 
 
-# ============================================================
-# 5. SOFT PENALTY
-# ============================================================
-
 def _is_morning(slot: Timeslot) -> bool:
     return slot.period in config.MORNING_PERIODS
 
@@ -336,20 +261,11 @@ def _is_afternoon(slot: Timeslot) -> bool:
 
 
 def _normalize_shift(shift: str) -> str:
-    """Chuẩn hóa preferred_shift về dạng không dấu, chữ thường."""
     mapping = {"sáng": "sang", "chiều": "chieu", "chieu": "chieu", "sang": "sang"}
     return mapping.get(shift.strip().lower(), shift.strip().lower())
 
 
 def soft_penalty(chrom: Chromosome, ds: TimetableDataset) -> float:
-    """
-    Tổng điểm phạt mềm:
-        1. GV dạy ngoài ca ưu tiên (tính theo slot ĐẦU TIÊN của slot_group)
-        2. GV dạy quá nhiều tiết liên tiếp trong ngày (phạt × số tiết vượt)
-        3. Tiết trống giữa các tiết trong ngày của lớp (gap)
-        4. Lịch phân bổ không đều trong tuần
-        5. GV dạy quá nhiều ngày khác nhau trong tuần
-    """
     penalty = 0.0
 
     teacher_day_periods: dict[str, dict[int, list[int]]] = {}
@@ -361,8 +277,6 @@ def soft_penalty(chrom: Chromosome, ds: TimetableDataset) -> float:
 
         demand = ds.demand_by_id[did]
         teacher = ds.teachers.get(asgn.teacher_id)
-
-        # Vi phạm 1: GV dạy ngoài ca ưu tiên — chỉ xét slot đầu tiên
         if teacher and teacher.preferred_shift and asgn.slot_group:
             first_slot = asgn.slot_group[0]
             shift = _normalize_shift(teacher.preferred_shift)
@@ -385,7 +299,6 @@ def soft_penalty(chrom: Chromosome, ds: TimetableDataset) -> float:
                  .setdefault(slot.day, [])
                  .append(slot.period))
 
-    # Vi phạm 2: GV dạy quá nhiều tiết liên tiếp
     for tid, days in teacher_day_periods.items():
         for periods in days.values():
             periods_sorted = sorted(set(periods))
@@ -403,7 +316,6 @@ def soft_penalty(chrom: Chromosome, ds: TimetableDataset) -> float:
                     max_consec - config.MAX_CONSECUTIVE_SLOTS
                 )
 
-    # Vi phạm 5: GV dạy quá nhiều ngày trong tuần
     max_teacher_days = getattr(config, "MAX_TEACHER_DAYS_PER_WEEK", 5)
     weight_teacher_days = getattr(config, "WEIGHT_TEACHER_DAYS", 2.0)
     for tid, days in teacher_day_periods.items():
@@ -411,7 +323,6 @@ def soft_penalty(chrom: Chromosome, ds: TimetableDataset) -> float:
         if n_days > max_teacher_days:
             penalty += weight_teacher_days * (n_days - max_teacher_days)
 
-    # Vi phạm 3: Gap tiết trống trong ngày của lớp
     for grp, days in class_day_periods.items():
         for periods in days.values():
             periods_sorted = sorted(set(periods))
@@ -419,21 +330,16 @@ def soft_penalty(chrom: Chromosome, ds: TimetableDataset) -> float:
                 gap = periods_sorted[i] - periods_sorted[i - 1] - 1
                 if gap > config.MAX_GAP_ALLOWED:
                     penalty += config.WEIGHT_GAP * gap
-
-    # Vi phạm 4: Phân bổ không đều trong tuần
     for grp, days in class_day_periods.items():
-        day_counts = [len(set(ps)) for ps in days.values()]
-        if len(day_counts) > 1:
-            spread = max(day_counts) - min(day_counts)
+        periods_per_day = [len(set(ps)) for ps in days.values()]
+        if len(periods_per_day) > 1:
+            spread = max(periods_per_day) - min(periods_per_day)
             if spread > 2:
                 penalty += config.WEIGHT_SPREAD_DAYS * (spread - 2)
 
     return penalty
 
 
-# ============================================================
-# 6. EVALUATE (tập trung, dùng mọi nơi)
-# ============================================================
 
 def evaluate_one(
     chrom: Chromosome,
@@ -441,7 +347,6 @@ def evaluate_one(
     room_index: dict,
     candidate_set: dict[str, set[str]],
 ) -> EvalResult:
-    """Đánh giá một chromosome, trả về EvalResult."""
     h = hard_penalty(chrom, ds, room_index, candidate_set)
     s = soft_penalty(chrom, ds)
 
@@ -459,7 +364,6 @@ def evaluate_population(
     room_index: dict,
     candidate_set: dict[str, set[str]],
 ) -> list[EvalResult]:
-    """Đánh giá toàn bộ quần thể một lần."""
     return [evaluate_one(c, ds, room_index, candidate_set) for c in population]
 
 
@@ -469,7 +373,6 @@ def fitness_function(
     room_index: Optional[dict] = None,
     candidate_set: Optional[dict[str, set[str]]] = None,
 ) -> tuple[float, int, float]:
-    """Backward-compatible fitness API."""
     if room_index is None:
         room_index = build_room_index(ds)
     if candidate_set is None:
@@ -478,15 +381,10 @@ def fitness_function(
     return result.fitness, result.hard, result.soft
 
 
-# ============================================================
-# 7. SELECTION
-# ============================================================
-
 def tournament_selection_indices(
     eval_results: list[EvalResult],
     k: int = config.TOURNAMENT_K,
 ) -> list[int]:
-    """Tournament selection trả về list index."""
     pop_size = len(eval_results)
     selected: list[int] = []
 
@@ -503,22 +401,20 @@ def tournament_selection(
     eval_results: list[EvalResult],
     k: int = config.TOURNAMENT_K,
 ) -> list[Chromosome]:
-    """Wrapper giữ backward-compat."""
     indices = tournament_selection_indices(eval_results, k)
     return [population[i] for i in indices]
 
 
-# ============================================================
-# 8. CROSSOVER (nhận thức conflict graph)
-# ============================================================
-
 def _repair_room(did: str, asgn: Assignment, ds: TimetableDataset, room_index: dict) -> Assignment:
-    """Repair room_type sai sau crossover."""
     if not asgn.is_assigned():
         return asgn
     demand = ds.demand_by_id[did]
     room = room_index.get(asgn.room_id)
-    if room is None or room.room_type != demand.required_room_type:
+    type_ok = room is not None and room.room_type == demand.required_room_type
+    cap_ok  = room is not None and (
+        demand.max_students == 0 or room.capacity >= demand.max_students
+    )
+    if not type_ok or not cap_ok:
         compat = ds.get_compatible_rooms(demand)
         if compat:
             asgn = asgn.copy()
@@ -533,7 +429,6 @@ def crossover(
     room_index: dict,
     conflict_groups: list[list[str]],
 ) -> tuple[Chromosome, Chromosome]:
-    """[QUALITY-1] Conflict-aware crossover."""
     if random.random() > config.CROSSOVER_PROB:
         return (
             {did: asgn.copy() for did, asgn in c1.items()},
@@ -551,7 +446,7 @@ def crossover(
 
         for did in group:
             a1 = src1.get(did, c1[did]).copy()
-            a2 = src2.get(did, c1[did]).copy()
+            a2 = src2.get(did, c2[did]).copy()
 
             child1[did] = _repair_room(did, a1, ds, room_index)
             child2[did] = _repair_room(did, a2, ds, room_index)
@@ -559,9 +454,6 @@ def crossover(
     return child1, child2
 
 
-# ============================================================
-# 9. COLLECT CONFLICTED DEMANDS
-# ============================================================
 
 def collect_conflicted_demands(
     chrom: Chromosome,
@@ -569,10 +461,6 @@ def collect_conflicted_demands(
     room_index: dict,
     candidate_set: dict[str, set[str]],
 ) -> tuple[set[str], set[str]]:
-    """
-    Tính tập demand vi phạm hard constraint.
-    Trả về: (bad, room_conflicted)
-    """
     teacher_slot, room_slot, class_slot, bad, _ = _build_usage_index(
         chrom, ds, room_index, candidate_set
     )
@@ -595,10 +483,6 @@ def collect_conflicted_demands(
     return bad, room_conflicted
 
 
-# ============================================================
-# 10. MUTATION (ADAPTIVE)
-# ============================================================
-
 def mutate(
     chrom: Chromosome,
     ds: TimetableDataset,
@@ -608,13 +492,6 @@ def mutate(
     conflicted: Optional[set[str]] = None,
     room_conflicted: Optional[set[str]] = None,
 ) -> Chromosome:
-    """
-    Đột biến adaptive.
-
-    [OPT-2] Copy có chọn lọc: chỉ tạo Assignment mới cho gene bị mutate.
-    [FIX-1] find_free_room dùng slot_to_occupied_rooms O(1) thay vì O(n²).
-    [FIX-2] find_free_room tách khỏi partner guard — luôn available khi RC.
-    """
     if random.random() > config.MUTATION_PROB:
         return chrom
 
@@ -626,9 +503,6 @@ def mutate(
     conflict_boost      = float(getattr(config, "MUTATION_CONFLICT_BOOST", 1.5))
     room_conflict_boost = conflict_boost * 1.5
     base_mutation_types = ["swap_slot", "change_room", "change_teacher"]
-
-    # Build room-conflict partner index + slot→occupied_rooms index
-    # [FIX-1] slot_to_occupied_rooms cho phép find_free_room chạy O(slots) thay vì O(n²)
     room_slot_usage: dict[tuple, list[str]] = {}
     if room_conflicted:
         for did, asgn in chrom.items():
@@ -637,8 +511,6 @@ def mutate(
             for slot in asgn.slot_group:
                 key = (asgn.room_id, slot.id)
                 room_slot_usage.setdefault(key, []).append(did)
-
-    # slot_id -> set of room_ids đang bị chiếm trong slot đó
     slot_to_occupied_rooms: dict[str, set[str]] = {}
     for (r_id, s_id), dids in room_slot_usage.items():
         if dids:
@@ -653,22 +525,25 @@ def mutate(
     new_chrom: Chromosome = {}
 
     for did, asgn in chrom.items():
-
         if not asgn.is_assigned():
             local_rate = max(adaptive_rate, 0.50)
+
         elif did in room_conflicted:
             local_rate = min(0.95, adaptive_rate * room_conflict_boost)
+
         elif did in conflicted:
             local_rate = min(0.90, adaptive_rate * conflict_boost)
+
         else:
             local_rate = max(0.01, adaptive_rate * 0.25)
-
         if random.random() >= local_rate:
             new_chrom[did] = asgn
             continue
 
         if not asgn.is_assigned():
             new_chrom[did] = _random_assignment(did, ds)
+            continue
+        if did in new_chrom:
             continue
 
         demand = ds.demand_by_id[did]
@@ -737,7 +612,6 @@ def mutate(
                 new_chrom[did] = asgn
 
         elif mutation_type == "find_free_room":
-            # [FIX-1] O(slots) thay vì O(n²): dùng slot_to_occupied_rooms đã build sẵn
             my_slot_ids = {s.id for s in asgn.slot_group}
             occupied_rooms: set[str] = set()
             for sid in my_slot_ids:
@@ -752,7 +626,6 @@ def mutate(
                     slot_group=asgn.slot_group,
                 )
             else:
-                # Không có phòng free → đổi cả slot lẫn room
                 compat_slots = ds.get_compatible_slot_groups(demand)
                 if compat_rooms and compat_slots:
                     new_chrom[did] = Assignment(
@@ -764,13 +637,12 @@ def mutate(
                     new_chrom[did] = asgn
 
         elif mutation_type == "swap_slot_keep_room":
-            # Giữ nguyên room, tìm slot_group không bị conflict room
             my_room = asgn.room_id
             occupied_slots: set[str] = set()
             for (r_id, s_id), slot_dids in room_slot_usage.items():
                 if r_id == my_room and any(d != did for d in slot_dids):
                     occupied_slots.add(s_id)
-            
+
             free_slot_groups = [
                 sg for sg in ds.get_compatible_slot_groups(demand)
                 if not any(s.id in occupied_slots for s in sg)
@@ -788,30 +660,34 @@ def mutate(
             partners = list(room_conflicting_partners.get(did, set()))
             if partners:
                 partner_did = random.choice(partners)
-                partner_asgn = new_chrom.get(partner_did) or chrom.get(partner_did)
-                if partner_asgn and partner_asgn.is_assigned():
-                    partner_demand = ds.demand_by_id[partner_did]
-                    if partner_demand.required_room_type == demand.required_room_type:
-                        new_chrom[did] = Assignment(
-                            teacher_id=asgn.teacher_id,
-                            room_id=partner_asgn.room_id,
-                            slot_group=asgn.slot_group,
-                        )
-                        new_chrom[partner_did] = Assignment(
-                            teacher_id=partner_asgn.teacher_id,
-                            room_id=asgn.room_id,
-                            slot_group=partner_asgn.slot_group,
-                        )
-                    else:
-                        compat_slots = ds.get_compatible_slot_groups(demand)
-                        if compat_slots:
+                if partner_did not in new_chrom:
+                    partner_asgn = chrom.get(partner_did)
+                    if partner_asgn and partner_asgn.is_assigned():
+                        partner_demand = ds.demand_by_id[partner_did]
+                        if partner_demand.required_room_type == demand.required_room_type:
+                            # Swap room của did và partner_did
                             new_chrom[did] = Assignment(
                                 teacher_id=asgn.teacher_id,
+                                room_id=partner_asgn.room_id,
+                                slot_group=asgn.slot_group,
+                            )
+                            new_chrom[partner_did] = Assignment(
+                                teacher_id=partner_asgn.teacher_id,
                                 room_id=asgn.room_id,
-                                slot_group=random.choice(compat_slots),
+                                slot_group=partner_asgn.slot_group,
                             )
                         else:
-                            new_chrom[did] = asgn
+                            compat_slots = ds.get_compatible_slot_groups(demand)
+                            if compat_slots:
+                                new_chrom[did] = Assignment(
+                                    teacher_id=asgn.teacher_id,
+                                    room_id=asgn.room_id,
+                                    slot_group=random.choice(compat_slots),
+                                )
+                            else:
+                                new_chrom[did] = asgn
+                    else:
+                        new_chrom[did] = asgn
                 else:
                     new_chrom[did] = asgn
             else:
@@ -820,12 +696,11 @@ def mutate(
         else:
             new_chrom[did] = asgn
 
+    for did in chrom:
+        if did not in new_chrom:
+            new_chrom[did] = chrom[did]
+
     return new_chrom
-
-
-# ============================================================
-# 11. VÒNG LẶP GA CHÍNH
-# ============================================================
 
 def run_ga(
     ds: TimetableDataset,
@@ -839,14 +714,6 @@ def run_ga(
     list[EvalResult],
     int,
 ]:
-    """
-    Genetic Algorithm chính.
-
-    [OPT-1] Cache eval của offspring — tránh evaluate lại ở Phase 1 thế hệ sau.
-    [OPT-2] Elitism dùng Assignment.copy() thay vì deepcopy chromosome.
-    [FIX-3] Restart: evaluate perturbed trước khi ghép vào eval_results
-            → tránh len(population) != len(eval_results).
-    """
     room_index     = build_room_index(ds)
     candidate_set  = build_candidate_set(ds)
     conflict_groups = build_conflict_groups(ds)
@@ -879,7 +746,6 @@ def run_ga(
 
     for gen in range(config.GENERATIONS):
 
-        # ── Phase 1: Cập nhật best & thống kê ─────────────────
         fitness_scores = [r.fitness for r in eval_results]
 
         gen_best_idx = max(range(len(eval_results)),
@@ -904,16 +770,15 @@ def run_ga(
 
         if best_result.hard == 0:
             if config.VERBOSE:
-                print(f"✅ Lịch hoàn hảo tại thế hệ {gen}!")
+                print(f"Lịch hoàn hảo tại thế hệ {gen}!")
             break
 
         if config.EARLY_STOPPING and no_improve_count >= no_improve_limit:
             if config.VERBOSE:
-                print(f"⏹ Early stopping tại thế hệ {gen} "
+                print(f"Early stopping tại thế hệ {gen} "
                       f"(không cải thiện {no_improve_count} thế hệ)")
             break
 
-        # ── Phase 2: Restart ───────────────────────────────────
         if (no_improve_count > 0
                 and no_improve_count % restart_threshold == 0
                 and best_result.hard > 0):
@@ -929,12 +794,10 @@ def run_ga(
             elites      = [{did: a.copy() for did, a in s.items()} for _, s in sorted_pairs[:keep_n]]
             elite_evals = [e for e, _ in sorted_pairs[:keep_n]]
 
-            # Đảm bảo best_schedule luôn nằm trong elites
             if best_schedule not in elites:
                 elites[0]      = {did: a.copy() for did, a in best_schedule.items()}
                 elite_evals[0] = best_result
 
-            # Perturbed: mutate best_schedule với rate cao để phá local optimum
             n_perturbed   = min(60, config.POP_SIZE - keep_n)
             n_pure_random = config.POP_SIZE - keep_n - n_perturbed
 
@@ -945,8 +808,6 @@ def run_ga(
 
             new_randoms = _make_random_population(ds, n_pure_random)
 
-            # [FIX-3] Evaluate CẢ perturbed lẫn new_randoms trước khi ghép
-            # → đảm bảo len(eval_results) == len(population) sau restart
             perturbed_evals  = evaluate_population(perturbed,    ds, room_index, candidate_set)
             new_random_evals = evaluate_population(new_randoms,  ds, room_index, candidate_set)
 
@@ -962,20 +823,15 @@ def run_ga(
             )
 
             if config.VERBOSE:
-                print(f"  🔄 Restart #{restart_count} tại gen {gen} "
+                print(f"Restart #{restart_count} tại gen {gen} "
                       f"(elite={keep_n}, perturbed={n_perturbed}, random={n_pure_random})")
 
-        # ── Phase 3: Select ────────────────────────────────────
         parent_indices = tournament_selection_indices(eval_results, k=config.TOURNAMENT_K)
         random.shuffle(parent_indices)
-
-        # ── Adaptive rate ──────────────────────────────────────
         adaptive_rate = min(
             base_mutation_demand_rate + no_improve_count * 0.002,
             0.50,
         )
-
-        # ── Phase 4: Reproduce ─────────────────────────────────
         assert len(parent_indices) >= 2
 
         offspring: list[Chromosome]      = []
@@ -1024,8 +880,6 @@ def run_ga(
             else:
                 offspring.append(c1)
                 offspring_evals.append(c1_eval)
-
-        # ── Phase 5: Next generation ───────────────────────────
         sorted_pairs = sorted(
             zip(eval_results, population),
             key=lambda x: x[0].dominance_key(),
@@ -1052,13 +906,11 @@ def run_ga(
     )
 
 
-
-# Sau run_ga(), thêm đoạn này để xem conflict cụ thể
 def debug_conflicts(best_schedule, ds, room_index, candidate_set):
     teacher_slot, room_slot, class_slot, _, _ = _build_usage_index(
         best_schedule, ds, room_index, candidate_set
     )
-    
+
     print("\n=== ROOM CONFLICTS ===")
     for (room_id, slot_id), dids in room_slot.items():
         if len(dids) > 1:
@@ -1067,15 +919,12 @@ def debug_conflicts(best_schedule, ds, room_index, candidate_set):
                 print(f"  Room {room_id} Slot {slot_id}: "
                       f"{did} ({d.subject_code} {d.session_type} "
                       f"cap_need={d.max_students})")
-    
+
     print("\n=== CLASS CONFLICTS ===")
     for (grp, slot_id), dids in class_slot.items():
         if len(dids) > 1:
             print(f"  Group {grp} Slot {slot_id}: {dids}")
 
-# ============================================================
-# 12. VISUALIZATION
-# ============================================================
 
 def plot_results(
     best_history: list[float],
@@ -1088,7 +937,6 @@ def plot_results(
     final_pop_evals: Optional[list[EvalResult]] = None,
     best_eval: Optional[EvalResult] = None,
 ) -> None:
-    """Vẽ 5 biểu đồ đánh giá toàn diện sau khi GA kết thúc."""
     if final_pop_evals is None:
         final_pop_evals = evaluate_population(final_population, ds, room_index, candidate_set)
 
@@ -1207,7 +1055,6 @@ def plot_results(
 
 
 def plot_fitness(best_history: list[float], mean_history: list[float]) -> None:
-    """Backward-compatible wrapper."""
     plt.figure(figsize=(10, 5))
     plt.plot(best_history, label="Best Fitness", linewidth=2)
     plt.plot(mean_history, label="Mean Fitness", linewidth=1.5, linestyle="--")
@@ -1218,11 +1065,6 @@ def plot_fitness(best_history: list[float], mean_history: list[float]) -> None:
     plt.grid(True)
     plt.tight_layout()
     plt.show()
-
-
-# ============================================================
-# 13. IN BẢNG KẾT QUẢ THỰC NGHIỆM
-# ============================================================
 
 def print_experiment_table(
     best_schedule: Chromosome,
@@ -1321,48 +1163,6 @@ def print_experiment_table(
     ]
     print("\n".join(lines))
 
-
-# ============================================================
-# 14. MAIN
-# ============================================================
-def check_feasibility(ds, room_index):
-    print("\n=== FEASIBILITY CHECK ===")
-    
-    # Kiểm tra phòng lớn (cap >= 100)
-    large_rooms = [r for r in ds.rooms if r.capacity >= 100 and r.room_type == 0]
-    large_demands = [d for d in ds.demands 
-                     if d.max_students >= 100 and d.required_room_type == 0]
-    
-    print(f"Phòng thường có sức chứa >= 100: {len(large_rooms)}")
-    for r in large_rooms:
-        print(f"  {r.id} cap={r.capacity}")
-    
-    print(f"\nDemand cần phòng >= 100 chỗ: {len(large_demands)}")
-    total_slots_needed = sum(d.periods_per_week for d in large_demands)
-    total_slots_avail  = sum(len(ds.timeslots) for _ in large_rooms)
-    print(f"  Tổng tiet cần: {total_slots_needed}")
-    print(f"  Tổng slot*room có: {total_slots_avail}")
-    print(f"  Tỉ lệ: {total_slots_needed/total_slots_avail*100:.1f}%")
-    
-    # Kiểm tra từng demand lớn
-    print("\nDemand không có phòng thay thế:")
-    for d in large_demands:
-        compat = ds.get_compatible_rooms(d)
-        if len(compat) <= 1:
-            print(f"  {d.id} {d.subject_code} {d.session_type} "
-                  f"cap={d.max_students} → chỉ {len(compat)} phòng: "
-                  f"{[r.id for r in compat]}")
-    
-    # Lab
-    lab_rooms = [r for r in ds.rooms if r.room_type == 1]
-    lab_demands = [d for d in ds.demands if d.required_room_type == 1]
-    lab_slots_needed = sum(d.periods_per_week for d in lab_demands)
-    lab_slots_avail  = len(lab_rooms) * len(ds.timeslots)
-    print(f"\nLab: {len(lab_rooms)} phòng × {len(ds.timeslots)} slot = {lab_slots_avail}")
-    print(f"Lab demands: {len(lab_demands)} demand, {lab_slots_needed} tiet")
-    print(f"Lab tỉ lệ: {lab_slots_needed/lab_slots_avail*100:.1f}%")
-
-
 if __name__ == "__main__":
     print("=" * 60)
     print("Loading dataset...")
@@ -1371,7 +1171,6 @@ if __name__ == "__main__":
 
     room_index    = build_room_index(ds)
     candidate_set = build_candidate_set(ds)
-    check_feasibility(ds, room_index)
     print("=" * 60)
     print(f"Bắt đầu GA | POP={config.POP_SIZE} | GEN={config.GENERATIONS}")
     print(f"ALPHA={config.ALPHA} | BETA={config.BETA}")

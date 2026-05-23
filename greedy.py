@@ -408,8 +408,6 @@ def convert_to_chromosome(
 
     return chromosome
 
-# PUBLIC API
-
 def run(
     data_dir: Optional[str] = None,
     verbose: bool = False,

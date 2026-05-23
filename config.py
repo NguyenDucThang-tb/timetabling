@@ -34,30 +34,26 @@ TOTAL_TIMESLOTS_EXPECTED = 72   # Gia tri mong doi; bao canh bao neu lech
 # 2. GENETIC ALGORITHM (GLOBAL SEARCH)
 # ------------------------------------------------------------
 
-POP_SIZE       = 200    # Kich thuoc quan the
-GENERATIONS    = 800    # So the he toi da
-CROSSOVER_PROB = 0.9    # Xac suat lai ghep
-MUTATION_PROB  = 0.9    # Xac suat dot bien kich hoat
-TOURNAMENT_K   = 5      # So ca the tham gia tournament (tang len 3->5: selection pressure manh hon)
-ELITISM_COUNT  = 6      # So ca the tot nhat giu nguyen (giam 6->3: giam bao thu, tang da dang)
+POP_SIZE       = 100   
+GENERATIONS    = 800   
+CROSSOVER_PROB = 0.9    
+MUTATION_PROB  = 0.9    
+TOURNAMENT_K   = 10     
+ELITISM_COUNT  = 2    
 
-# Ty le demand bi dot bien moi lan mutate duoc kich hoat
-# 0.12: du manh de thoat local optimum ma khong pha vo qua nhieu
-MUTATION_DEMAND_RATE = 0.12
 
-# He so boost mutation cho demand dang vi pham hard constraint
-# Demand co conflict se bi mutate voi rate = min(0.90, base_rate * BOOST)
-MUTATION_CONFLICT_BOOST = 4.0
+MUTATION_DEMAND_RATE = 0.02
 
-# Child gate: tu choi con neu hard penalty kem hon parent qua nguong nay
-# TOL=5: can bang giua kham pha (khong qua chat) va chat luong (khong qua long)
-CHILD_HARD_WORSE_TOL = 8
+
+MUTATION_CONFLICT_BOOST = 1.5
+
+
+CHILD_HARD_WORSE_TOL = 3
 RESTART_THRESHOLD = 80
-# Khoi tao quan the tu Greedy seed
+RESTART_KEEP_RATIO = 0.03
+
 USE_GREEDY_SEED = True
-GREEDY_RATIO    = 0.1   # 20% quan the tu Greedy (giam 0.3->0.2: tranh echo chamber)
-                        # Ca the dau tien luon la greedy nguyen ban (khong mutate)
-                        # Cac ca the con lai mutate voi rate tang dan 0.05->0.30
+GREEDY_RATIO    = 0.1
 
 
 # ------------------------------------------------------------

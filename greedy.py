@@ -1,30 +1,3 @@
-"""
-greedy.py - Thuat toan tham lam thuan tuy cho bai toan lap lich.
-
-Chien luoc:
-  1. Sap xep demands theo priority giam dan (tu data.py).
-  2. Voi moi demand, thu lan luot cac combo (slot_group, teacher, room):
-       - Slot group: uu tien nhom slot it xung dot nhat, tranh CN
-       - Teacher: uu tien GV it buoc nhat + phu hop ca lam viec
-       - Room: uu tien phong vua du suc chua (tranh lang phi phong lon)
-  3. Gan ngay neu khong vi pham rang buoc cung:
-       - Khong trung slot voi demand xung dot (class / teacher duy nhat)
-       - Khong trung (slot, room) voi demand da xep
-       - Khong trung (slot, teacher) voi demand da xep
-  4. Neu khong tim duoc combo hop le -> ghi nhan UNSCHEDULED.
-
-Dau ra:
-    schedule = {
-        "D001": {"teacher": "T015", "room": "501-T3", "slots": ["S001", "S002"]},
-        ...
-    }
-
-Chay:
-    python greedy.py
-    python greedy.py --data ./data --quiet
-    python greedy.py --top 20
-"""
-
 from __future__ import annotations
 
 import sys
@@ -41,24 +14,15 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 from data import load_dataset, TimetableDataset, Demand, Room, Timeslot, Teacher
 
-# Kieu du lieu dau ra
-
-Assignment = dict   # {"teacher": str, "room": str, "slots": list[str]}
-Schedule   = dict   # demand_id (str) -> Assignment
-
-# GREEDY STATE  —  theo doi trang thai hien tai, kiem tra rang buoc O(1)
+Assignment = dict
+Schedule   = dict
 
 class GreedyState:
 
     def __init__(self) -> None:
-        # (slot_id, room_id)    -> demand_id da chiem
         self.slot_room:    dict[tuple[str, str], str] = {}
-        # (slot_id, teacher_id) -> demand_id da chiem
         self.slot_teacher: dict[tuple[str, str], str] = {}
-        # teacher_id -> set[slot_id] da dung
         self.teacher_slots: dict[str, set[str]] = defaultdict(set)
-
-    # ---- Kiem tra ----
 
     def room_free(self, slot_ids: list[str], room_id: str) -> bool:
         return all((sid, room_id) not in self.slot_room for sid in slot_ids)
@@ -95,18 +59,13 @@ class GreedyState:
             and self.no_class_conflict(slot_ids, demand, schedule, conflict_matrix)
         )
 
-    # ---- Cap nhat ----
-
     def assign(self, demand_id: str, slot_ids: list[str], teacher_id: str, room_id: str) -> None:
         for sid in slot_ids:
             self.slot_room[(sid, room_id)]       = demand_id
             self.slot_teacher[(sid, teacher_id)] = demand_id
             self.teacher_slots[teacher_id].add(sid)
 
-
-# HELPERS: sap xep ung vien theo heuristic nhe
 def _slot_shift(slot_group: list[Timeslot]) -> str:
-    """Tiet 1-6: sang, 7+: chieu."""
     return "sang" if min(s.period for s in slot_group) <= 6 else "chieu"
 
 
@@ -116,11 +75,6 @@ def _sort_teachers(
     state: GreedyState,
     slot_group: list[Timeslot],
 ) -> list[str]:
-    """
-    Uu tien:
-      1. GV it tiet da xep nhat (con nhieu "cho trong" nhat)
-      2. GV co preferred_shift khop voi shift cua slot group
-    """
     shift = _slot_shift(slot_group)
 
     def key(tid: str) -> tuple:
@@ -139,12 +93,6 @@ def _sort_slot_groups(
     conflict_matrix: dict[str, set[str]],
     schedule: Schedule,
 ) -> list[list[Timeslot]]:
-    """
-    Uu tien slot group:
-      1. It demand xung dot da chiem slot nay nhat
-      2. It tong traffic (demand bat ky) tren cac slot nay nhat
-      3. Tranh CN (day == 0)
-    """
     conflicting_ids = conflict_matrix.get(demand.id, set())
 
     def key(grp: list[Timeslot]) -> tuple:
@@ -153,7 +101,6 @@ def _sort_slot_groups(
             1 for cid in conflicting_ids
             if cid in schedule and (set(schedule[cid]["slots"]) & sid_set)
         )
-        # Tong so GV dang day trong cac slot nay (do "dong duc")
         busy_teacher = sum(
             1 for sid in sid_set
             for tid in state.teacher_slots
@@ -166,22 +113,9 @@ def _sort_slot_groups(
 
 
 def _sort_rooms(rooms: list[Room], demand: Demand) -> list[Room]:
-    """
-    Uu tien phong nho nhat ma van >= max_students
-    (da duoc filter capacity o data.py, o day chi can sap xep).
-    """
     return sorted(rooms, key=lambda r: r.capacity)
 
-
-# GREEDY CORE
 def greedy_solve(ds: TimetableDataset, verbose: bool = True, demand_order: Optional[list] = None) -> tuple[Schedule, list[str]]:
-    """
-    Thuat toan chinh.
-
-    Returns:
-        schedule    : dict demand_id -> {"teacher", "room", "slots"}
-        unscheduled : danh sach demand_id khong the xep
-    """
     schedule:    Schedule  = {}
     unscheduled: list[str] = []
     state = GreedyState()
@@ -197,14 +131,12 @@ def greedy_solve(ds: TimetableDataset, verbose: bool = True, demand_order: Optio
         compat_rooms  = ds.get_compatible_rooms(demand)
         slot_groups   = ds.get_compatible_slot_groups(demand)
 
-        # Kiem tra co ung vien khong
         if not compat_rooms or not slot_groups or not demand.candidate_teachers:
             unscheduled.append(demand.id)
             if verbose:
                 _print_row(demand, None, None, None, "SKIP")
             continue
 
-        # Sap xep ung vien theo heuristic
         sorted_slots   = _sort_slot_groups(slot_groups, demand, state, ds.conflict_matrix, schedule)
         sorted_rooms   = _sort_rooms(compat_rooms, demand)
 
@@ -221,11 +153,10 @@ def greedy_solve(ds: TimetableDataset, verbose: bool = True, demand_order: Optio
                 if not state.teacher_free(slot_ids, teacher_id):
                     continue
                 if not state.no_class_conflict(slot_ids, demand, schedule, ds.conflict_matrix):
-                    continue  # toan bo slot group da bi chiem boi xung dot lop
+                    continue
 
                 for room in sorted_rooms:
                     if state.room_free(slot_ids, room.id):
-                        # === GAN LICH ===
                         schedule[demand.id] = {
                             "teacher": teacher_id,
                             "room":    room.id,
@@ -236,12 +167,12 @@ def greedy_solve(ds: TimetableDataset, verbose: bool = True, demand_order: Optio
 
                         if verbose:
                             _print_row(demand, teacher_id, room, slot_group, "OK")
-                        break  # room found
+                        break
 
                 if assigned:
-                    break  # teacher found
+                    break
             if assigned:
-                break  # slot group found
+                break
 
         if not assigned:
             unscheduled.append(demand.id)
@@ -250,8 +181,6 @@ def greedy_solve(ds: TimetableDataset, verbose: bool = True, demand_order: Optio
 
     return schedule, unscheduled
 
-
-# VERBOSE PRINT HELPERS
 def _print_header() -> None:
     print(f"  {'ID':<7} {'Pri':>6}  {'Subject':<12} {'Type':<22} "
           f"{'Teacher':<8} {'Room':<14} {'Day':<10} {'Tiet':<8} Status")
@@ -275,14 +204,7 @@ def _print_row(
     print(f"  {demand.id:<7} {demand.priority:>6.1f}  {demand.subject_code:<12} "
           f"{demand.session_type:<22} {t:<8} {r:<14} {day:<10} {tiet:<8} {status}")
 
-
-# POST-SOLVE VALIDATION
-
 def validate_schedule(schedule: Schedule, ds: TimetableDataset) -> list[str]:
-    """
-    Kiem tra lai schedule: phat hien moi conflict con sot.
-    Tra ve danh sach string mo ta loi (rong = hop le).
-    """
     errors: list[str] = []
     slot_room_used:    dict[tuple, str] = {}
     slot_teacher_used: dict[tuple, str] = {}
@@ -323,8 +245,6 @@ def validate_schedule(schedule: Schedule, ds: TimetableDataset) -> list[str]:
 
     return errors
 
-
-# SUMMARY REPORT
 def print_summary(
     schedule: Schedule,
     unscheduled: list[str],
@@ -362,7 +282,6 @@ def print_summary(
                       f"compat_rooms={len(ds.get_compatible_rooms(d))} "
                       f"slot_groups={len(ds.get_compatible_slot_groups(d))}")
 
-    # Top 5 phong & GV busy
     top_rooms = sorted(room_usage.items(), key=lambda x: -x[1])[:5]
     print(f"\n  Top 5 phong ban nhat : {top_rooms}")
 
@@ -374,26 +293,12 @@ def print_summary(
 
     print("=" * 65)
 
-
-# MULTI-RESTART GREEDY
 def greedy_best_of_n(
     ds: TimetableDataset,
     n: int = 5,
     verbose: bool = False,
     verbose_best: bool = True,
 ) -> tuple[Schedule, list[str]]:
-    """
-    Chay greedy N lan voi thu tu demand khac nhau, giu lai lan tot nhat.
-
-    Muc dich: greedy thuan tuy phu thuoc vao thu tu xet demand.
-    - Lan 1: thu tu priority giam dan (chuan).
-    - Lan 2..N: pha tron mot phan de kham pha thu tu khac.
-
-    Chien luoc partial shuffle:
-      - Giu nguyen top 20%% demand priority cao nhat.
-      - Xao tron cac demand co priority gan bang nhau (cung "cum").
-      - noise_ratio tang dan theo so lan chay -> lan sau da dang hon lan truoc.
-    """
     best_schedule:    Schedule  = {}
     best_unscheduled: list[str] = []
     best_count:       int       = -1
@@ -407,7 +312,7 @@ def greedy_best_of_n(
 
     for i in range(n):
         if i == 0:
-            trial_order = ordered[:]                          # lan 1: thu tu chuan
+            trial_order = ordered[:]
         else:
             trial_order = _partial_shuffle(ordered, noise_ratio=0.15 * i)
 
@@ -437,13 +342,6 @@ def greedy_best_of_n(
 
 
 def _partial_shuffle(demands: list, noise_ratio: float = 0.15) -> list:
-    """
-    Xao tron mot phan danh sach demand da sap xep theo priority.
-
-    - Top 20%% (priority cao nhat): giu nguyen, khong cham.
-    - Phan con lai: cum theo priority window, xao tron trong cum.
-    - noise_ratio cao -> window lon -> xao tron nhieu hon.
-    """
     if not demands:
         return demands[:]
 
@@ -477,39 +375,11 @@ def _partial_shuffle(demands: list, noise_ratio: float = 0.15) -> list:
 
     return locked + result
 
-
-# ===========================================================================
-# CHUYEN DOI SANG CHROMOSOME CHO GA
-# ===========================================================================
-
 def convert_to_chromosome(
     schedule: "Schedule",
     ds: "TimetableDataset",
 ) -> dict:
-    """
-    Chuyen schedule cua greedy (dict-based) sang Chromosome cua GA (dataclass-based).
-
-    Mapping:
-        greedy["teacher"]  -> Assignment.teacher_id  (str)
-        greedy["room"]     -> Assignment.room_id     (str)
-        greedy["slots"]    (list[str]) -> Assignment.slot_group (list[Timeslot])
-
-    Demand UNSCHEDULED (khong co trong schedule) -> Assignment(None, None, None)
-    -> GA se co gang xep chung qua mutation / crossover.
-
-    NOTE: import ga.Assignment duoc thuc hien lazy (tranh circular import
-    vi ga.py co the import greedy.py).
-
-    Input:
-        schedule : greedy Schedule dict
-        ds       : TimetableDataset
-    Output:
-        Chromosome: dict[demand_id -> ga.Assignment]
-    """
-    # Lazy import tranh circular dependency (ga import greedy)
-    from ga import Assignment as GaAssignment   # type: ignore
-
-    # Build index slot_id -> Timeslot object 1 lan, O(n)
+    from ga import Assignment as GaAssignment
     slot_index: dict[str, Timeslot] = {s.id: s for s in ds.timeslots}
 
     chromosome: dict = {}
@@ -519,14 +389,12 @@ def convert_to_chromosome(
         asgn_dict = schedule.get(did)
 
         if asgn_dict is None:
-            # UNSCHEDULED: Assignment rong, GA se tu tim cho qua mutation
             chromosome[did] = GaAssignment(
                 teacher_id=None,
                 room_id=None,
                 slot_group=None,
             )
         else:
-            # Chuyen list[slot_id str] -> list[Timeslot object]
             slot_group = [
                 slot_index[sid]
                 for sid in asgn_dict["slots"]
@@ -540,31 +408,13 @@ def convert_to_chromosome(
 
     return chromosome
 
-
-# ===========================================================================
 # PUBLIC API
-# ===========================================================================
 
 def run(
     data_dir: Optional[str] = None,
     verbose: bool = False,
     n_restarts: int = 5,
 ) -> tuple[Schedule, list[str], TimetableDataset]:
-    """
-    Entry point chay greedy voi multi-restart.
-
-        from greedy import run
-        schedule, unscheduled, ds = run(data_dir="./data", n_restarts=5)
-
-    Args:
-        data_dir   : thu muc CSV
-        verbose    : in chi tiet tung demand (tat mac dinh khi restart nhieu lan)
-        n_restarts : so lan restart (mac dinh 5)
-    Returns:
-        schedule     : Schedule tot nhat
-        unscheduled  : danh sach demand UNSCHEDULED
-        ds           : TimetableDataset (de dung lam dau vao cho GA)
-    """
     ds = load_dataset(data_dir)
 
     t0 = time.time()
@@ -587,11 +437,6 @@ def run(
     print_summary(schedule, unscheduled, ds, elapsed)
 
     return schedule, unscheduled, ds
-
-
-# ===========================================================================
-# STANDALONE
-# ===========================================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Greedy Timetable Solver")

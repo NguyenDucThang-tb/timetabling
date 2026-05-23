@@ -1,10 +1,3 @@
-"""
-Backtracking repair step for timetabling pipeline.
-
-Input/output format is synchronized with GA and Local Search:
-    Chromosome = dict[demand_id -> ga.Assignment]
-"""
-
 from __future__ import annotations
 
 import copy
@@ -245,14 +238,10 @@ def repair_with_backtracking(
     )[:max_depth]
     mutable_set = set(target)
 
-    # Usage from fixed part only (outside mutable set)
     teacher_busy_seed, room_busy_seed, class_busy_seed = _build_usage_from_fixed(
         schedule, ds, mutable_set
     )
 
-    # Baseline when all mutable demands are temporarily unassigned.
-    # From this baseline, each feasible assignment of a mutable demand
-    # reduces hard by exactly demand.periods_per_week.
     baseline = copy.deepcopy(schedule)
     for did in target:
         baseline[did] = Assignment(None, None, None)
@@ -272,7 +261,6 @@ def repair_with_backtracking(
     success = False
     stop_by_early = False
 
-    # Track the best schedule by hard-penalty during search.
     best_schedule = copy.deepcopy(schedule)
     best_hard = hard_before
     best_soft = soft_before
@@ -314,8 +302,6 @@ def repair_with_backtracking(
                 stop_by_early = True
                 return False
 
-            # Incremental hard score from baseline:
-            # each feasible assigned mutable demand reduces hard by its periods.
             current_hard = max(0, baseline_hard - assigned_periods)
             if current_hard < best_hard:
                 best_hard = current_hard
@@ -327,7 +313,6 @@ def repair_with_backtracking(
                     return True
 
             if idx >= len(target):
-                # Complete assignment for current sampled candidate set.
                 return best_hard == 0
 
             did = target[idx]
@@ -368,7 +353,6 @@ def repair_with_backtracking(
         if dfs(0):
             break
 
-        # If no progress in this attempt, next attempt resamples candidates.
         if config.VERBOSE:
             rem = target_period_sum - max(0, baseline_hard - best_hard)
             print(

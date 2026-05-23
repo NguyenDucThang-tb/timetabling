@@ -1,7 +1,3 @@
-"""
-Full timetabling pipeline:
-    Greedy -> GA -> Local Search -> Backtracking Repair
-"""
 
 from __future__ import annotations
 
@@ -26,14 +22,7 @@ import local_search as ls
 
 
 def _extract_ga_outputs(ga_out: tuple) -> tuple[Chromosome, list[float], list[float]]:
-    """
-    Normalize run_ga outputs across GA versions.
 
-    Expected minimum structure:
-        index 0: best chromosome
-        index 2: best fitness history
-        index 3: mean fitness history
-    """
     if len(ga_out) < 4:
         raise ValueError(f"run_ga returned {len(ga_out)} values, expected at least 4")
 

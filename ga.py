@@ -63,8 +63,6 @@ def build_candidate_set(ds: TimetableDataset) -> dict[str, set[str]]:
     """demand_id -> set(candidate_teacher_ids)."""
     return {d.id: set(d.candidate_teachers) for d in ds.demands}
 
-
-# Backward-compatible aliases for older modules.
 def _build_room_index(ds: TimetableDataset) -> dict[str, object]:
     return build_room_index(ds)
 
@@ -158,7 +156,7 @@ def initialize_population(
 
     n_mutated = max(0, n_greedy - 1)
     for i in range(n_mutated):
-        rate = 0.05 + 0.25 * i / max(n_mutated - 1, 1)  # 0.05 → 0.30
+        rate = 0.05 + 0.25 * i / max(n_mutated - 1, 1)
         population.append(_light_mutate(greedy_schedule, ds, rate))
 
     while len(population) < config.POP_SIZE:
@@ -553,7 +551,6 @@ def mutate(
             mutation_types.append("assign_full")
 
         if did in room_conflicted:
-            # [FIX-2] find_free_room luôn available khi RC, không cần partner
             mutation_types.append("find_free_room")
             if room_conflicting_partners.get(did):
                 mutation_types.append("swap_rooms")
@@ -665,7 +662,6 @@ def mutate(
                     if partner_asgn and partner_asgn.is_assigned():
                         partner_demand = ds.demand_by_id[partner_did]
                         if partner_demand.required_room_type == demand.required_room_type:
-                            # Swap room của did và partner_did
                             new_chrom[did] = Assignment(
                                 teacher_id=asgn.teacher_id,
                                 room_id=partner_asgn.room_id,

@@ -1,10 +1,3 @@
-"""
-local_search.py
-
-Tabu / Hill-climbing local search cho bai toan timetabling.
-Mac dinh doc tham so tu config.py.
-"""
-
 from __future__ import annotations
 
 import random
@@ -90,12 +83,8 @@ def _to_chromosome_for_eval(schedule: Schedule, ds):
 
 
 def evaluate(schedule: Schedule, ds) -> tuple[float, int, float]:
-    # Unified metric: use GA fitness/hard/soft so all pipeline stages
-    # are measured on the same scale.
     from ga import _build_candidate_set, _build_room_index, fitness_function
-
     chrom = _to_chromosome_for_eval(schedule, ds)
-
     cache = getattr(evaluate, "_cache", None)
     ds_key = id(ds)
     if not cache or cache.get("ds_key") != ds_key:
@@ -150,8 +139,6 @@ def _collect_conflicted_demands(schedule: Schedule, ds) -> list[str]:
             if overlap(assign1["slots"], schedule.assignment[d2_id]["slots"]):
                 bad.add(d1_id)
                 bad.add(d2_id)
-
-    # Unassigned demands are hard violations under GA metric.
     for d in ds.demands:
         if d.id not in schedule.assignment:
             bad.add(d.id)
@@ -164,8 +151,6 @@ def _sample_demands_for_move(schedule: Schedule, ds) -> list[str]:
         conflicted = _collect_conflicted_demands(schedule, ds)
         if conflicted:
             return conflicted
-    # Include all demands (assigned + unassigned) so local search can
-    # try assigning currently missing demands.
     return [d.id for d in ds.demands]
 
 
@@ -198,8 +183,6 @@ def _mutate_assignment(
                         "room": room,
                         "slots": slot_group,
                     }
-
-                    # Evaluate in-place, then rollback in finally.
                     schedule.assignment[d_id] = cand_assign
                     score, hard, soft = evaluate(schedule, ds)
                     if score > best_score:
@@ -242,8 +225,6 @@ def generate_neighbors(
 
     for _ in range(num_samples):
         d_id = random.choice(candidates)
-
-        # 80% reassign, 20% swap as diversification
         if random.random() < 0.8:
             result = _mutate_assignment(schedule, ds, d_id)
             if result is None:
